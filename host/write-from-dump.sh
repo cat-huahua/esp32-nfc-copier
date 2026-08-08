@@ -2,7 +2,8 @@
 # 一键: 选一个 .dump 文件, 写回卡 (数据块; 跳过 UID 和密钥块, 安全)
 cd "$(dirname "$(readlink -f "$0")")/.." || exit 1
 
-DUMPDIR="$PWD/dumps"
+# 默认目录: 环境变量 NFC_DUMP_DIR 优先, 否则项目内 dumps/
+DUMPDIR="${NFC_DUMP_DIR:-$PWD/dumps}"
 mkdir -p "$DUMPDIR"
 
 # 选文件: 优先 kdialog 图形选择, 否则用最近的 dump

@@ -137,8 +137,13 @@ pio device monitor   # 串口监视 115200
 不管哪块板:**刷卡支付、AirDrop、华为/小米共享都做不了**——支付要安全芯片,共享是 Wi-Fi Direct 私有协议,RC522 连 NFC P2P 都不支持。
 
 ## dump 保存位置
-`ESP32 NFC 一键 dump` 桌面图标会弹 kdialog 让你**自选保存位置/文件名**(默认 `dumps/card-<时间戳>.dump`)。
-命令行也可指定:`python3 host/nfc_host.py -o /任意/路径.dump dump`。写回用 `write_from_dump.py` 或桌面图标可打开任意 `.dump`。
+- `ESP32 NFC 一键 dump` 桌面图标会弹 kdialog 让你**自选保存位置/文件名**。
+- **默认目录**可配置:设环境变量 `NFC_DUMP_DIR`(否则用项目内 `dumps/`)。例如:
+  ```
+  export NFC_DUMP_DIR="$HOME/nfc-dumps"      # 加到 ~/.zshrc 永久生效
+  ```
+  dump 和写回两个脚本都以它作默认目录。
+- 命令行也可直接指定:`python3 host/nfc_host.py -o /任意/路径.dump dump`。
 
 ## 重要限制
 - 用**两级密钥字典 + KEY A/B + 密钥收割**尝试认证;字典外的真·随机密钥仍读不出(显示 `key unknown`),需 Proxmark 的 nested/darkside,RC522 做不到。
@@ -150,4 +155,6 @@ pio device monitor   # 串口监视 115200
 仅用于复制你**本人拥有或已获授权**的卡(自家门禁、测试卡等)。未经授权复制他人门禁/支付卡是违法的。
 
 ## License
-[MIT](LICENSE) © 2026 cat-huahua
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+
+Copyright (c) 2026 cat-huahua
