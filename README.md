@@ -1,6 +1,33 @@
 # ESP32 NFC 卡复制器
 
-ESP32 + RC522(MFRC522)+ DST-013 1.3" OLED(SH1106)+ 2 按键,复制 MIFARE Classic 1K。
+ESP32 + RC522(MFRC522)+ DST-013 1.3" OLED(SH1106)+ 2 按键,读/写/克隆 MIFARE Classic Mini/1K/4K。
+
+## 功能
+- **READ**:两级密钥字典 + KEY A/B + 密钥收割(key 链补轮),读整卡含密钥
+- **WRITE Gen2 / Gen1a**:Gen1a 后门整卡克隆,尾块回填真密钥 → 克隆卡密钥 = 源卡
+- **SAVE / LOAD / DELETE**:动态 NVS 存储(卡数动态)+ PackBits 压缩(UID/密钥不压)
+- **PC BRIDGE**:USB 串口读卡器,配电脑端脚本(读 UID / dump / 写回)
+- 开机 RC522 自检(读版本寄存器,便于排查接线)
+
+## 接线图
+
+```
+                      ┌───────────────────────┐
+     RC522 (SPI,3V3)  │       ESP32 (XX5R69)   │   DST-013 OLED (I2C)
+   ┌──────────┐       │                        │       ┌──────────┐
+   │ SDA/SS ──┼───────┤ GPIO5           GPIO21 ├───────┼─ SDA     │
+   │ SCK    ──┼───────┤ GPIO18          GPIO22 ├───────┼─ SCL     │
+   │ MOSI   ──┼───────┤ GPIO23            3V3  ├───┬───┼─ VCC     │
+   │ MISO   ──┼───────┤ GPIO19            GND  ├─┬─┴───┼─ GND     │
+   │ RST    ──┼───────┤ GPIO27                 │ │     └──────────┘
+   │ 3.3V   ──┼───┐   │                        │ │
+   │ GND    ──┼─┐ │   │ GPIO32 ─── [BTN1] ──── GND (切换菜单)
+   └──────────┘ │ └───┤ 3V3     GPIO33 ─ [BTN2] ─ GND (确认/执行)
+                └─────┤ GND                    │
+                      └───────────────────────┘
+  ⚠ RC522 与 OLED 的 VCC 都接 3V3, 绝不接 5V(5V 会把 I²C/SPI 灌进 3.3V GPIO)
+  ⚠ 最易错: MISO↔MOSI 接反 → 开机自检显示 ver:0x00。MISO 必须到 GPIO19
+```
 
 ## 接线
 
