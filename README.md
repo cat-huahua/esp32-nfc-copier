@@ -136,11 +136,18 @@ pio device monitor   # 串口监视 115200
 
 不管哪块板:**刷卡支付、AirDrop、华为/小米共享都做不了**——支付要安全芯片,共享是 Wi-Fi Direct 私有协议,RC522 连 NFC P2P 都不支持。
 
+## dump 保存位置
+`ESP32 NFC 一键 dump` 桌面图标会弹 kdialog 让你**自选保存位置/文件名**(默认 `dumps/card-<时间戳>.dump`)。
+命令行也可指定:`python3 host/nfc_host.py -o /任意/路径.dump dump`。写回用 `write_from_dump.py` 或桌面图标可打开任意 `.dump`。
+
 ## 重要限制
-- 只支持默认密钥 `FFFFFFFFFFFF` 的 MIFARE Classic 1K。非默认密钥的扇区读不出(显示 FAIL,且写入时会跳过,不会写坏)。
-- `WRITE Gen1a` 会写密钥块与访问位,做**完整克隆**;若源卡某扇区没读到,该扇区会跳过而非写零。
-- 加密门禁卡 / 滚动码 / DESFire / CPU 卡 / 大多数私有加密卡**无法复制**——RC522 硬件与协议限制,非代码问题。
-- 清空某个 flash 槽:目前无 UI 删除,重新 `SAVE` 覆盖即可;要全清可在 setup 里调用 `prefs.begin("nfc",false); prefs.clear(); prefs.end();` 烧一次再删掉。
+- 用**两级密钥字典 + KEY A/B + 密钥收割**尝试认证;字典外的真·随机密钥仍读不出(显示 `key unknown`),需 Proxmark 的 nested/darkside,RC522 做不到。
+- `WRITE Gen1a` 做**完整克隆**并回填真密钥(克隆卡密钥=源卡);源卡没读到的扇区会跳过而非写零。
+- 加密门禁卡 / 滚动码 / DESFire / CPU 卡 / 非 Type-A(Type-B / 15693 / FeliCa)/ 125kHz「ID 卡」**无法复制**——RC522 硬件与协议限制,非代码问题。
+- flash 里的卡用菜单 `DELETE saved` 删除(动态计数);要全清可在 setup 里调用 `prefs.begin("nfc",false); prefs.clear(); prefs.end();` 烧一次再删掉。
 
 ## 法律 / 道德
 仅用于复制你**本人拥有或已获授权**的卡(自家门禁、测试卡等)。未经授权复制他人门禁/支付卡是违法的。
+
+## License
+[MIT](LICENSE) © 2026 cat-huahua
