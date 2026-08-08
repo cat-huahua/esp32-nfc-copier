@@ -145,6 +145,19 @@ pio device monitor   # 串口监视 115200
   dump 和写回两个脚本都以它作默认目录。
 - 命令行也可直接指定:`python3 host/nfc_host.py -o /任意/路径.dump dump`。
 
+## MCP server(让 Claude 驱动读卡器)
+`mcp/nfc_mcp.py` 把 PC BRIDGE 包成一个 **MCP server**(零依赖,手写 stdio JSON-RPC,只用 pyserial),
+让 Claude 或任意 MCP 客户端 通过工具碰卡读 UID / dump / 读写块。
+
+前提:ESP32 已进 `PC BRIDGE (USB)` 模式,Arduino 串口监视器已关。
+
+注册到 Claude Code:
+```
+claude mcp add nfc -- python3 ~/esp32-nfc-copier/mcp/nfc_mcp.py
+```
+工具:`nfc_ping` · `nfc_read_uid` · `nfc_wait_tap` · `nfc_info` · `nfc_dump` · `nfc_read_block` · `nfc_write_block`
+(都可选 `port` 参数,不填自动找串口)。
+
 ## 重要限制
 - 用**两级密钥字典 + KEY A/B + 密钥收割**尝试认证;字典外的真·随机密钥仍读不出(显示 `key unknown`),需 Proxmark 的 nested/darkside,RC522 做不到。
 - `WRITE Gen1a` 做**完整克隆**并回填真密钥(克隆卡密钥=源卡);源卡没读到的扇区会跳过而非写零。
