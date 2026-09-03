@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760">
+  <style>
+    .box{fill:#172033;stroke:#8da2c0;stroke-width:2}.pin{fill:#263653;stroke:#8da2c0;stroke-width:1}
+    .title{font:700 28px sans-serif;fill:#fff}.label{font:16px sans-serif;fill:#fff}.small{font:14px sans-serif;fill:#d8e2f0}
+    .spi{stroke:#ffb454;stroke-width:3;fill:none}.i2c{stroke:#62d5a4;stroke-width:3;fill:none}.power{stroke:#f06f8e;stroke-width:3;fill:none}.button{stroke:#70a7ff;stroke-width:3;fill:none}
+  </style>
+  <rect width="1200" height="760" fill="#0d1320"/>
+  <text x="600" y="45" text-anchor="middle" class="title">ESP32 NFC Copier — Pin Diagram</text>
+  <rect x="430" y="105" width="340" height="540" rx="18" class="box"/>
+  <text x="600" y="140" text-anchor="middle" class="title" font-size="23">ESP32 XX5R69</text>
+  <text x="600" y="165" text-anchor="middle" class="small">Classic ESP32 / VSPI</text>
+  <rect x="70" y="180" width="240" height="270" rx="14" class="box"/>
+  <text x="190" y="215" text-anchor="middle" class="title" font-size="21">RC522</text>
+  <text x="95" y="255" class="label">SDA / SS</text><text x="95" y="290" class="label">SCK</text><text x="95" y="325" class="label">MOSI</text><text x="95" y="360" class="label">MISO</text><text x="95" y="395" class="label">RST</text><text x="95" y="430" class="label">3.3V / GND</text>
+  <rect x="890" y="180" width="240" height="210" rx="14" class="box"/>
+  <text x="1010" y="215" text-anchor="middle" class="title" font-size="21">DST-013 OLED</text>
+  <text x="915" y="270" class="label">SDA</text><text x="915" y="315" class="label">SCL</text><text x="915" y="360" class="label">VCC / GND</text>
+  <rect x="70" y="540" width="240" height="115" rx="14" class="box"/>
+  <text x="190" y="575" text-anchor="middle" class="title" font-size="21">Buttons</text>
+  <text x="95" y="615" class="label">BTN1 → GPIO32</text><text x="95" y="642" class="small">other side → GND</text>
+  <rect x="890" y="500" width="240" height="155" rx="14" class="box"/>
+  <text x="1010" y="535" text-anchor="middle" class="title" font-size="21">Power</text>
+  <text x="915" y="580" class="label">3V3 → RC522 + OLED</text><text x="915" y="615" class="label">GND → common ground</text>
+  <g class="spi"><path d="M310 250 H430"/><path d="M310 285 H430"/><path d="M310 320 H430"/><path d="M310 355 H430"/><path d="M310 390 H430"/></g>
+  <g class="i2c"><path d="M770 265 H890"/><path d="M770 310 H890"/></g>
+  <g class="button"><path d="M310 610 H430"/><path d="M770 610 H890"/></g>
+  <g class="power"><path d="M310 425 C370 425 370 475 430 475"/><path d="M770 565 C820 565 840 365 890 365"/><path d="M770 600 C820 600 840 390 890 390"/></g>
+  <g class="label">
+    <text x="350" y="244">GPIO5</text><text x="350" y="279">GPIO18</text><text x="350" y="314">GPIO23</text><text x="350" y="349">GPIO19</text><text x="350" y="384">GPIO27</text>
+    <text x="795" y="259">GPIO21</text><text x="795" y="304">GPIO22</text><text x="350" y="604">GPIO32</text><text x="795" y="604">GPIO33</text>
+  </g>
+  <text x="600" y="705" text-anchor="middle" class="title" font-size="19" fill="#f06f8e">IMPORTANT: Use 3.3V only. MISO → GPIO19, MOSI → GPIO23.</text>
+  <text x="600" y="733" text-anchor="middle" class="small">RC522 SDA is the SPI chip-select pin, not I²C SDA.</text>
+</svg>

@@ -11,6 +11,8 @@ ESP32 + RC522(MFRC522)+ DST-013 1.3" OLED(SH1106)+ 2 按键,读/写/克隆 MIFAR
 
 ## 接线图
 
+![ESP32 NFC Copier pin diagram](docs/pin-diagram.svg)
+
 ```
                       ┌───────────────────────┐
      RC522 (SPI,3V3)  │       ESP32 (XX5R69)   │   DST-013 OLED (I2C)
