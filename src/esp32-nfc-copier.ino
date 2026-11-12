@@ -155,7 +155,7 @@ bool    imgKeyKnown[MAX_SECTORS];
 // ---------- 菜单 ----------
 enum Menu { MENU_INFO, MENU_READ, MENU_W_G2, MENU_W_G1A, MENU_SAVE, MENU_LOAD, MENU_DELETE, MENU_BRIDGE, MENU_COUNT };
 const char* menuNames[MENU_COUNT] = {
-  "INFO / UID", "READ card", "WRITE Gen2", "WRITE Gen1a",
+  "INFO / UID", "READ card", "WRITE standard", "WRITE Gen1a",
   "SAVE to flash", "LOAD from flash", "DELETE saved", "PC BRIDGE (USB)"
 };
 int menuIndex = 0;
@@ -249,18 +249,32 @@ bool gen1aUnlock() {
 }
 
 // ================= READ =================
-// 重新选中当前卡。试下一个密钥前必须让卡回到可选状态:
-// 认证失败会让卡 halt, 而刚激活的卡是 active —— 两种状态 WUPA/REQA 都未必应答。
-// 最稳的办法: 关一下天线让卡断电复位到 IDLE, 再 REQA + Select 选回同一张卡。
+// Re-select after an authentication failure. First use the normal ISO14443A
+// HALT -> WUPA -> SELECT sequence. Antenna power-cycling is only a fallback;
+// doing it for every key made ordinary cards unstable and caused false removal.
 bool cardReselect() {
   mfrc522.PCD_StopCrypto1();
-  mfrc522.PCD_AntennaOff();
-  delayMicroseconds(800);            // 断电让卡复位
-  mfrc522.PCD_AntennaOn();
-  delay(5);                          // 等卡重新上电(4K 卡电容大, 多给点时间)
-  for (int i = 0; i < 5; i++) {
-    if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) return true;
+  mfrc522.PICC_HaltA();                 // timeout is normal if already halted
+  delay(1);
+  for (int i = 0; i < 3; i++) {
+    byte atqa[2]; byte atqaSize = sizeof(atqa);
+    MFRC522::StatusCode wake = mfrc522.PICC_WakeupA(atqa, &atqaSize);
+    if ((wake == MFRC522::STATUS_OK || wake == MFRC522::STATUS_COLLISION) &&
+        mfrc522.PICC_Select(&(mfrc522.uid), 0) == MFRC522::STATUS_OK) return true;
     delay(2);
+  }
+
+  // Recovery fallback for a card left in an undefined crypto state.
+  mfrc522.PCD_AntennaOff();
+  delay(3);
+  mfrc522.PCD_AntennaOn();
+  delay(8);
+  for (int i = 0; i < 3; i++) {
+    byte atqa[2]; byte atqaSize = sizeof(atqa);
+    MFRC522::StatusCode wake = mfrc522.PICC_WakeupA(atqa, &atqaSize);
+    if ((wake == MFRC522::STATUS_OK || wake == MFRC522::STATUS_COLLISION) &&
+        mfrc522.PICC_Select(&(mfrc522.uid), 0) == MFRC522::STATUS_OK) return true;
+    delay(3);
   }
   return false;
 }
@@ -436,7 +450,7 @@ bool readCard() {
   return hasData;
 }
 
-// ================= WRITE (Gen2, 完整克隆) =================
+// ================= WRITE (standard / Gen2-compatible data) =================
 void buildTrailer(int sector, uint8_t out[16]);   // 前向声明(定义在本文件后面)
 bool writeCardGen2() {
   if (!hasData) { showLines("No data in buffer", "READ/LOAD first"); delay(2000); return false; }
@@ -445,29 +459,22 @@ bool writeCardGen2() {
 
   int okBlocks = 0, failBlocks = 0, skipped = 0;
   for (int sector = 0; sector < cardSectors; sector++) {
-    // 用字典在目标卡上找该扇区可用密钥(空白 Gen2 卡默认 FF 一次就中)
+    // Find a usable target-card key. Works for normal writable MIFARE Classic
+    // cards as well as Gen2 cards when access bits permit data writes.
     int ki = findSectorKey(sector);
     if (ki < 0) { failBlocks += secBlockCount(sector); continue; }
 
     int f = secFirstBlock(sector), n = secBlockCount(sector);
-    // 先写数据块(扇区0的块0=UID, Gen2 CUID 卡可直接写)
+    // Safe standard write: never touch manufacturer block 0 or sector trailers.
+    // Writing either on an ordinary card fails or can change keys/access bits.
     for (int j = 0; j < n - 1; j++) {
       int blk = f + j;
+      if (blk == 0)            { skipped++; continue; }
       if (!blockValid[blk]) { skipped++; continue; }     // 无效数据不写
       if (mfrc522.MIFARE_Write(blk, cardData[blk], 16) == MFRC522::STATUS_OK) okBlocks++;
-      else failBlocks++;                                  // 块0在普通卡失败属正常
+      else failBlocks++;
     }
-    // 最后写密钥块(回填源卡真密钥), Gen2 卡也能完整克隆。
-    // 放在扇区末尾: 写后该扇区密钥变源卡密钥, 但下一扇区仍是目标默认密钥, 互不影响。
-    int trailer = secTrailer(sector);
-    if (blockValid[trailer]) {
-      uint8_t tr[16];
-      buildTrailer(sector, tr);
-      if (mfrc522.MIFARE_Write(trailer, tr, 16) == MFRC522::STATUS_OK) okBlocks++;
-      else failBlocks++;                                  // 访问位拒绝则写失败, 块保持原样不砖
-    } else {
-      skipped++;
-    }
+    skipped++;                                            // trailer intentionally skipped
     char l2[24]; snprintf(l2, sizeof(l2), "sector %d/%d", sector + 1, cardSectors);
     showLines("Writing...", l2);
   }
@@ -476,7 +483,7 @@ bool writeCardGen2() {
   char l2[24], l3[24];
   snprintf(l2, sizeof(l2), "OK:%d FAIL:%d", okBlocks, failBlocks);
   snprintf(l3, sizeof(l3), "skip:%d (no data)", skipped);
-  showLines("CLONE DONE", l2, l3, "UID+keys copied!");
+  showLines("WRITE DONE", l2, l3, "data blocks only");
   delay(3000);
   return true;
 }
