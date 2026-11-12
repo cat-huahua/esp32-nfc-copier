@@ -121,6 +121,17 @@ pio device monitor   # 串口监视 115200
 `PING→PONG` · `UID` · `INFO` · `RBLK <n>` · `WBLK <n> <32hex>` · `DUMP`(以 `DONE` 结束)。
 
 ### 电脑端脚本 / 桌面图标
+
+Linux includes a native Tk GUI (`host/nfc_gui.py`) for connection testing,
+UID/info reads, dump-to-file, and safe write-back. The three KDE desktop
+launchers open the appropriate GUI directly and do not use Guake. The optional
+command-line wrapper explicitly opens **Konsole** when launched without a TTY.
+
+```bash
+python3 host/nfc_gui.py                 # complete GUI
+python3 host/nfc_gui.py --mode dump     # open the dump workflow
+python3 host/nfc_gui.py --mode write    # open the write-back workflow
+```
 | 脚本 | 桌面图标 | 作用 |
 |------|----------|------|
 | `host/nfc_host.py` | ESP32 NFC 桥接器 | 交互:`uid/info/dump/rblk/wblk` |

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ESP32 NFC Dump
+Comment=Save an NFC card dump to a chosen file
+Exec=python3 /home/ma-xiuyuan/esp32-nfc-copier/host/nfc_gui.py --mode dump
+Path=/home/ma-xiuyuan/esp32-nfc-copier
+Terminal=false
+Icon=document-save
+Categories=Utility;
+StartupNotify=true

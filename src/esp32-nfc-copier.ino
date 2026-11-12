@@ -46,6 +46,13 @@ U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
 MFRC522::MIFARE_Key key;
 Preferences prefs;
 
+// FT232/CP210x boards may pulse EN when Linux opens the serial port.  Keep a
+// bridge-mode marker in RTC RAM so that an auto-reset immediately returns to
+// PC BRIDGE instead of stopping at the startup/self-test screen.  RTC RAM is
+// cleared by a real power loss; BTN1 clears it on a normal bridge exit.
+RTC_DATA_ATTR uint32_t bridgeBootMagic = 0;
+const uint32_t BRIDGE_BOOT_MAGIC = 0x4E464342; // "NFCB"
+
 // ---------- 数据缓冲(支持 MIFARE Classic Mini/1K/4K, 扇区/块数动态) ----------
 #define MAX_BLOCKS  256      // 4K = 256 块
 #define MAX_SECTORS 40       // 4K = 40 扇区
@@ -926,6 +933,7 @@ void bridgeHandle(String cmd) {
 }
 
 void pcBridgeMode() {
+  bridgeBootMagic = BRIDGE_BOOT_MAGIC;
   showLines("PC BRIDGE (USB)", "serial @115200", "run nfc_host.py", "BTN1 = exit");
   // 清空可能残留的串口输入
   while (Serial.available()) Serial.read();
@@ -934,7 +942,11 @@ void pcBridgeMode() {
   String line = "";
   uint32_t count = 0;
   while (true) {
-    if (pressed(b1)) { Serial.println("BYE"); return; }
+    if (pressed(b1)) {
+      bridgeBootMagic = 0;
+      Serial.println("BYE");
+      return;
+    }
     while (Serial.available()) {
       char c = Serial.read();
       if (c == '\r') continue;
@@ -964,6 +976,12 @@ void setup() {
 
   for (uint8_t i = 0; i < 6; i++) key.keyByte[i] = 0xFF;  // 默认密钥
   for (int i = 0; i < MAX_BLOCKS; i++) blockValid[i] = false;
+
+  // Resume bridge automatically after a USB serial auto-reset.
+  if (bridgeBootMagic == BRIDGE_BOOT_MAGIC) {
+    pcBridgeMode();
+    // BTN1 exited bridge; continue to the normal self-check/menu.
+  }
 
   // --- RC522 实时自检: 循环读版本寄存器, 按 BTN2 继续进菜单 ---
   Serial.println("RC522 live self-check. Wiggle wires; BTN2 to continue.");

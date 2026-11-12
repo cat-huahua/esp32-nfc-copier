@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ESP32 NFC Bridge
+Comment=Read and write NFC cards through the ESP32 PC bridge
+Exec=python3 /home/ma-xiuyuan/esp32-nfc-copier/host/nfc_gui.py --mode bridge
+Path=/home/ma-xiuyuan/esp32-nfc-copier
+Terminal=false
+Icon=media-flash
+Categories=Utility;
+StartupNotify=true

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ESP32 NFC Write Back
+Comment=Write card data from an NFC dump file
+Exec=python3 /home/ma-xiuyuan/esp32-nfc-copier/host/nfc_gui.py --mode write
+Path=/home/ma-xiuyuan/esp32-nfc-copier
+Terminal=false
+Icon=document-revert
+Categories=Utility;
+StartupNotify=true

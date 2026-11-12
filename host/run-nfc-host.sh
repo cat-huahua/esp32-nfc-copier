@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# 在终端里启动 nfc_host.py, 退出后停住等按键(防止窗口秒关)
+# Konsole fallback for users who prefer the command-line bridge.
+if [ ! -t 0 ] && command -v konsole >/dev/null; then
+  exec konsole --hold -e "$0" "$@"
+fi
 cd "$(dirname "$(readlink -f "$0")")/.." || exit 1
 echo "== ESP32 NFC 桥接器 =="
 echo "提示: 先在 ESP32 OLED 菜单选 PC BRIDGE (USB), 并关掉 Arduino 串口监视器"
