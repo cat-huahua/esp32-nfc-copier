@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import queue
+import socket
 import threading
 import tkinter as tk
 from datetime import datetime
@@ -20,6 +21,21 @@ from write_from_dump import is_trailer, parse_dump
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DUMP_DIR = Path(os.environ.get("NFC_DUMP_DIR", "~/Dumps")).expanduser()
 CONFIG_FILE = Path("~/.config/esp32-nfc-copier/settings.json").expanduser()
+INSTANCE_SOCKET = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / f"esp32-nfc-gui-{os.getuid()}.sock"
+
+
+def notify_existing_instance(mode):
+    """Tell an existing GUI to show a tab; return False if none is running."""
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(0.5)
+    try:
+        client.connect(str(INSTANCE_SOCKET))
+        client.sendall((mode + "\n").encode())
+        return True
+    except OSError:
+        return False
+    finally:
+        client.close()
 
 
 class NfcGui(tk.Tk):
@@ -31,6 +47,7 @@ class NfcGui(tk.Tk):
         self.events = queue.Queue()
         self.busy = False
         self.ser = None
+        self.instance_server = None
         self.port = tk.StringVar()
         self.status = tk.StringVar(value="Select PC BRIDGE (USB) on the ESP32 OLED first.")
         settings = self._load_settings()
@@ -38,8 +55,8 @@ class NfcGui(tk.Tk):
         self.write_block0 = tk.BooleanVar(value=False)
         self.write_trailers = tk.BooleanVar(value=False)
         self._build_ui()
+        self._start_instance_server()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
-        self.port_box.bind("<<ComboboxSelected>>", lambda _event: self._port_changed())
         self.refresh_ports()
         self.after(80, self._poll_events)
         # Connect once at startup.  Opening FT232 may reset the ESP32 once, but
@@ -201,12 +218,48 @@ class NfcGui(tk.Tk):
                 pass
             self.ser = None
 
+    def _start_instance_server(self):
+        try:
+            INSTANCE_SOCKET.unlink(missing_ok=True)
+            self.instance_server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.instance_server.bind(str(INSTANCE_SOCKET))
+            self.instance_server.listen(4)
+        except OSError:
+            self.instance_server = None
+            return
+
+        def listen():
+            while self.instance_server is not None:
+                try:
+                    conn, _ = self.instance_server.accept()
+                    with conn:
+                        mode = conn.recv(32).decode(errors="ignore").strip()
+                    self.events.put(("mode", mode))
+                except OSError:
+                    return
+
+        threading.Thread(target=listen, daemon=True).start()
+
+    def _show_mode(self, mode):
+        tabs = {"bridge": 0, "dump": 1, "write": 2, "settings": 3}
+        self.notebook.select(tabs.get(mode, 0))
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
     def _port_changed(self):
         self._disconnect()
         self.connection_badge.configure(text="●  Not connected", fg="#7a8491")
 
     def _on_close(self):
         self._disconnect()
+        if self.instance_server is not None:
+            try:
+                self.instance_server.close()
+            except OSError:
+                pass
+            self.instance_server = None
+        INSTANCE_SOCKET.unlink(missing_ok=True)
         self.destroy()
 
     def _ensure_connection(self):
@@ -239,6 +292,9 @@ class NfcGui(tk.Tk):
         try:
             while True:
                 kind, value = self.events.get_nowait()
+                if kind == "mode":
+                    self._show_mode(value)
+                    continue
                 self.busy = False
                 self.progress.stop()
                 if kind == "error":
@@ -358,6 +414,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("bridge", "dump", "write"), default="bridge")
     args = parser.parse_args()
+    if notify_existing_instance(args.mode):
+        return
     NfcGui(args.mode).mainloop()
 
 

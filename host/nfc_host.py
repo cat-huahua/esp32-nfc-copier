@@ -18,6 +18,7 @@ nfc_host.py — 电脑端驱动 ESP32 NFC 桥接器 (PC BRIDGE 模式)
 import sys
 import time
 import argparse
+import termios
 
 try:
     import serial
@@ -51,7 +52,17 @@ def open_serial(port):
     ser.timeout = 0.3
     ser.dtr = False
     ser.rts = False
+    if hasattr(ser, "exclusive"):
+        ser.exclusive = True
     ser.open()
+    # Keep modem-control lines stable when the process exits.  Without this,
+    # Linux HUPCL can drop DTR/RTS and the next open pulses ESP32 EN again.
+    try:
+        attrs = termios.tcgetattr(ser.fileno())
+        attrs[2] &= ~termios.HUPCL
+        termios.tcsetattr(ser.fileno(), termios.TCSANOW, attrs)
+    except (AttributeError, OSError, termios.error):
+        pass
     return ser
 
 

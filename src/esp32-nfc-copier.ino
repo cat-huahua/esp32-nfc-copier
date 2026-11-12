@@ -30,6 +30,10 @@
 #include <Wire.h>
 #include <Preferences.h>
 
+// Arduino's .ino preprocessor emits function prototypes near the top. Forward
+// declare Button so the generated pressed(Button&) prototype is valid.
+struct Button;
+
 // ---------- 引脚定义 ----------
 #define RC522_SS   5    // RC522 SDA/SS
 #define RC522_RST  27   // RC522 RST
@@ -52,6 +56,22 @@ Preferences prefs;
 // cleared by a real power loss; BTN1 clears it on a normal bridge exit.
 RTC_DATA_ATTR uint32_t bridgeBootMagic = 0;
 const uint32_t BRIDGE_BOOT_MAGIC = 0x4E464342; // "NFCB"
+
+void setBridgeBootRequested(bool enabled) {
+  Preferences bootPrefs;
+  if (bootPrefs.begin("nfcboot", false)) {
+    bootPrefs.putBool("bridge", enabled);
+    bootPrefs.end();
+  }
+}
+
+bool bridgeBootRequested() {
+  Preferences bootPrefs;
+  if (!bootPrefs.begin("nfcboot", true)) return false;
+  bool enabled = bootPrefs.getBool("bridge", false);
+  bootPrefs.end();
+  return enabled;
+}
 
 // ---------- 数据缓冲(支持 MIFARE Classic Mini/1K/4K, 扇区/块数动态) ----------
 #define MAX_BLOCKS  256      // 4K = 256 块
@@ -934,6 +954,7 @@ void bridgeHandle(String cmd) {
 
 void pcBridgeMode() {
   bridgeBootMagic = BRIDGE_BOOT_MAGIC;
+  setBridgeBootRequested(true);
   showLines("PC BRIDGE (USB)", "serial @115200", "run nfc_host.py", "BTN1 = exit");
   // 清空可能残留的串口输入
   while (Serial.available()) Serial.read();
@@ -944,6 +965,7 @@ void pcBridgeMode() {
   while (true) {
     if (pressed(b1)) {
       bridgeBootMagic = 0;
+      setBridgeBootRequested(false);
       Serial.println("BYE");
       return;
     }
@@ -977,8 +999,11 @@ void setup() {
   for (uint8_t i = 0; i < 6; i++) key.keyByte[i] = 0xFF;  // 默认密钥
   for (int i = 0; i < MAX_BLOCKS; i++) blockValid[i] = false;
 
-  // Resume bridge automatically after a USB serial auto-reset.
-  if (bridgeBootMagic == BRIDGE_BOOT_MAGIC) {
+  // RTC RAM is not retained reliably by every EN/reset circuit, so NVS keeps
+  // the user's bridge intent across every reset and power cycle. BTN1 is the
+  // explicit way to leave bridge mode and clear this flag.
+  bool persistedBridge = bridgeBootRequested();
+  if (bridgeBootMagic == BRIDGE_BOOT_MAGIC || persistedBridge) {
     pcBridgeMode();
     // BTN1 exited bridge; continue to the normal self-check/menu.
   }

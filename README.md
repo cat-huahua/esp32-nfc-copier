@@ -131,6 +131,12 @@ The GUI has a **Settings** tab where the default dump folder can be changed and
 saved permanently. Settings are stored in
 `~/.config/esp32-nfc-copier/settings.json`; the initial default is `~/Dumps`.
 
+All three desktop launchers share one running GUI instance and one persistent,
+exclusive serial connection. Clicking Dump or Write Back while the Bridge GUI
+is open switches its tab instead of reopening `/dev/ttyUSB0`. Bridge mode is
+remembered by the ESP32 until BTN1 is pressed, so an FT232 reset returns
+directly to PC Bridge.
+
 ```bash
 python3 host/nfc_gui.py                 # complete GUI
 python3 host/nfc_gui.py --mode dump     # open the dump workflow
