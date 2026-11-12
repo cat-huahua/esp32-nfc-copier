@@ -147,6 +147,12 @@ const int MAX_EXTRA = 48;
 MFRC522::MIFARE_Key extraKeys[MAX_EXTRA];
 int numExtra = 0;
 
+// User-supplied known keys uploaded by PC BRIDGE. These are kept separate from
+// harvested keys so readCard() can reset its harvest pool without losing them.
+const int MAX_CUSTOM_KEYS = 64;
+MFRC522::MIFARE_Key customKeys[MAX_CUSTOM_KEYS];
+int numCustomKeys = 0;
+
 // 卡镜像的每扇区密钥(READ 后由 sectorKey 拷入; 属于 buffer, 供克隆/存档/dump 用)
 MFRC522::MIFARE_Key imgKey[MAX_SECTORS];
 uint8_t imgKeyType[MAX_SECTORS];
@@ -288,6 +294,15 @@ void addExtraKey(const uint8_t *kb) {
   numExtra++;
 }
 
+bool addCustomKey(const uint8_t *kb) {
+  for (int i = 0; i < numCustomKeys; i++)
+    if (memcmp(customKeys[i].keyByte, kb, 6) == 0) return true;
+  if (numCustomKeys >= MAX_CUSTOM_KEYS) return false;
+  memcpy(customKeys[numCustomKeys].keyByte, kb, 6);
+  numCustomKeys++;
+  return true;
+}
+
 // 从某扇区已读到的数据里收割候选密钥:
 // - 数据块(j=0,1,2): 前 6 / 后 6 字节(密钥常明文藏在最后一个数据块,如下个扇区密钥)
 // - 尾块(j=3): 前 6 = KeyA 字段, 后 6 = KeyB 字段(尾块可读时直接就是密钥)
@@ -340,6 +355,11 @@ int findSectorKey(int sector) {
   for (int ki = 0; ki < NUM_DICT; ki++) {
     int r = tryKeyOnSector(sector, KEY_DICT[ki]);
     if (r == 1) return ki;
+    if (r == -1) return -1;
+  }
+  for (int ci = 0; ci < numCustomKeys; ci++) {
+    int r = tryKeyOnSector(sector, customKeys[ci].keyByte);
+    if (r == 1) return NUM_DICT + ci;
     if (r == -1) return -1;
   }
   for (int ei = 0; ei < numExtra; ei++) {
@@ -454,23 +474,6 @@ bool readCard() {
 void buildTrailer(int sector, uint8_t out[16]);   // 前向声明(定义在本文件后面)
 bool writeCardGen2() {
   if (!hasData) { showLines("No data in buffer", "READ/LOAD first"); delay(2000); return false; }
-
-  // Full clone must never silently skip unknown source blocks or keys.
-  for (int blk = 0; blk < cardBlocks; blk++) {
-    if (!blockValid[blk]) {
-      showLines("SOURCE INCOMPLETE", "READ had failed blocks", "nothing was written");
-      delay(2500);
-      return false;
-    }
-  }
-  for (int sector = 0; sector < cardSectors; sector++) {
-    if (!imgKeyKnown[sector]) {
-      showLines("SOURCE INCOMPLETE", "missing sector key", "nothing was written");
-      delay(2500);
-      return false;
-    }
-  }
-
   showLines("WRITE Gen2 FULL:", "Tap MAGIC card...");
   if (!waitForCard(10000)) { showLines("WRITE FAILED", "no card (timeout)"); delay(1500); return false; }
 
@@ -480,59 +483,97 @@ bool writeCardGen2() {
       (targetType == MFRC522::PICC_TYPE_MIFARE_1K   && cardBlocks == 64) ||
       (targetType == MFRC522::PICC_TYPE_MIFARE_4K   && cardBlocks == 256);
   if (!sameGeometry) {
-    showLines("TARGET MISMATCH", "card size/type differs", "nothing was written");
+    showLines("TARGET MISMATCH", "card size/type differs", "write cancelled");
     mfrc522.PICC_HaltA(); mfrc522.PCD_StopCrypto1();
     delay(2500);
     return false;
   }
 
-  // Preflight every target sector before changing anything. findSectorKey
-  // stores the target's current key/type in sectorKey[]/sectorKeyType[].
+  bool badBlock[MAX_BLOCKS];
+  for (int blk = 0; blk < cardBlocks; blk++) badBlock[blk] = !blockValid[blk];
+  int writeOk = 0;
+
+  // Best effort: authenticate and try every valid source block. A rejected
+  // block is recorded, but does not prevent later sectors from being tried.
   for (int sector = 0; sector < cardSectors; sector++) {
     char l2[24]; snprintf(l2, sizeof(l2), "sector %d/%d", sector + 1, cardSectors);
-    showLines("Checking target...", l2);
+    showLines("Cloning Gen2...", l2);
+    sectorKeyKnown[sector] = false;             // now stores target's old key
     if (findSectorKey(sector) < 0) {
-      showLines("TARGET AUTH FAIL", l2, "nothing was written");
-      mfrc522.PICC_HaltA(); mfrc522.PCD_StopCrypto1();
-      delay(2500);
-      return false;
-    }
-  }
-
-  int okBlocks = 0, failBlocks = 0;
-  for (int sector = 0; sector < cardSectors; sector++) {
-    if (!cardReselect() ||
-        mfrc522.PCD_Authenticate(sectorKeyType[sector], secTrailer(sector),
-                                &sectorKey[sector], &(mfrc522.uid)) != MFRC522::STATUS_OK) {
-      failBlocks += secBlockCount(sector);
-      break;
+      int f = secFirstBlock(sector), n = secBlockCount(sector);
+      for (int j = 0; j < n; j++) badBlock[f + j] = true;
+      continue;
     }
 
     int f = secFirstBlock(sector), n = secBlockCount(sector);
-    // Write every data block, including manufacturer block 0 on Gen2 magic.
     for (int j = 0; j < n - 1; j++) {
       int blk = f + j;
-      if (mfrc522.MIFARE_Write(blk, cardData[blk], 16) == MFRC522::STATUS_OK) okBlocks++;
-      else failBlocks++;
+      if (!blockValid[blk]) continue;
+      if (mfrc522.MIFARE_Write(blk, cardData[blk], 16) == MFRC522::STATUS_OK) writeOk++;
+      else badBlock[blk] = true;
     }
 
-    // Write the sector trailer last, after which the target uses source keys.
-    uint8_t trailerData[16];
-    buildTrailer(sector, trailerData);
-    if (mfrc522.MIFARE_Write(secTrailer(sector), trailerData, 16) == MFRC522::STATUS_OK) okBlocks++;
-    else failBlocks++;
-
-    char l2[24]; snprintf(l2, sizeof(l2), "sector %d/%d", sector + 1, cardSectors);
-    showLines("Cloning Gen2...", l2);
+    int trailer = secTrailer(sector);
+    if (blockValid[trailer]) {
+      uint8_t trailerData[16];
+      buildTrailer(sector, trailerData);
+      if (mfrc522.MIFARE_Write(trailer, trailerData, 16) == MFRC522::STATUS_OK) writeOk++;
+      else badBlock[trailer] = true;
+    }
   }
   mfrc522.PICC_HaltA(); mfrc522.PCD_StopCrypto1();
 
-  char l2[24];
-  snprintf(l2, sizeof(l2), "OK:%d FAIL:%d", okBlocks, failBlocks);
-  showLines(failBlocks ? "CLONE FAILED" : "CLONE COMPLETE", l2,
-            "UID + data + keys", "no blocks skipped");
-  delay(3000);
-  return failBlocks == 0;
+  // End verification: authenticate with the source key (or the target's old
+  // key if its trailer was rejected), reread every block, and compare data.
+  for (int sector = 0; sector < cardSectors; sector++) {
+    bool sourceAuth = false, authOk = false;
+    if (imgKeyKnown[sector] && cardReselect()) {
+      sourceAuth = mfrc522.PCD_Authenticate(imgKeyType[sector], secTrailer(sector),
+                                           &imgKey[sector], &(mfrc522.uid)) == MFRC522::STATUS_OK;
+      authOk = sourceAuth;
+    }
+    if (!authOk && sectorKeyKnown[sector] && cardReselect()) {
+      authOk = mfrc522.PCD_Authenticate(sectorKeyType[sector], secTrailer(sector),
+                                       &sectorKey[sector], &(mfrc522.uid)) == MFRC522::STATUS_OK;
+    }
+
+    int f = secFirstBlock(sector), n = secBlockCount(sector);
+    if (!authOk) {
+      for (int j = 0; j < n; j++) badBlock[f + j] = true;
+      continue;
+    }
+    for (int j = 0; j < n; j++) {
+      int blk = f + j;
+      uint8_t buf[18], size = sizeof(buf);
+      if (mfrc522.MIFARE_Read(blk, buf, &size) != MFRC522::STATUS_OK) {
+        badBlock[blk] = true;
+      } else if (isTrailer(blk)) {
+        uint8_t expected[16]; buildTrailer(sector, expected);
+        // Key A is never returned by MIFARE_Read. Verify key acceptance plus
+        // access bytes; this is the strongest check the RC522 can perform.
+        if (!sourceAuth || memcmp(buf + 6, expected + 6, 4) != 0) badBlock[blk] = true;
+      } else if (memcmp(buf, cardData[blk], 16) != 0) {
+        badBlock[blk] = true;
+      }
+    }
+  }
+  mfrc522.PICC_HaltA(); mfrc522.PCD_StopCrypto1();
+
+  int skipped = 0, firstBad[3] = {-1, -1, -1};
+  for (int blk = 0; blk < cardBlocks; blk++) {
+    if (badBlock[blk]) {
+      if (skipped < 3) firstBad[skipped] = blk;
+      skipped++;
+      Serial.print("SKIPPED BLOCK "); Serial.println(blk);
+    }
+  }
+  char l2[24], l3[24];
+  snprintf(l2, sizeof(l2), "WRITE:%d SKIP:%d", writeOk, skipped);
+  if (skipped == 0) snprintf(l3, sizeof(l3), "verify: ALL MATCH");
+  else snprintf(l3, sizeof(l3), "first:%d,%d,%d", firstBad[0], firstBad[1], firstBad[2]);
+  showLines(skipped ? "CLONE PARTIAL" : "CLONE COMPLETE", l2, l3, "end verify done");
+  delay(4000);
+  return skipped == 0;
 }
 
 // 组装写入克隆卡的尾块: 读回来的 KeyA 恒为屏蔽的 00, 这里回填发现的真密钥,
@@ -910,6 +951,16 @@ bool bridgeParseHex16(const String &s, uint8_t *out) {
   return true;
 }
 
+bool bridgeParseHex6(const String &s, uint8_t *out) {
+  if (s.length() != 12) return false;
+  for (int i = 0; i < 6; i++) {
+    int hi = bridgeNib(s[2 * i]), lo = bridgeNib(s[2 * i + 1]);
+    if (hi < 0 || lo < 0) return false;
+    out[i] = (hi << 4) | lo;
+  }
+  return true;
+}
+
 void bridgeReadBlk(int blk) {
   if (blk < 0 || blk >= MAX_BLOCKS) { Serial.println("ERR RANGE"); return; }
   if (!bridgeActivate())            { Serial.println("ERR NOCARD"); return; }
@@ -966,6 +1017,16 @@ void bridgeDump() {
     else Serial.print("--------------INVALID-----------");
     Serial.println();
   }
+  Serial.print("LOCKED");
+  bool anyLocked = false;
+  for (int s = 0; s < cardSectors; s++) {
+    if (!imgKeyKnown[s]) {
+      Serial.print(' '); Serial.print(s);
+      anyLocked = true;
+    }
+  }
+  if (!anyLocked) Serial.print(" NONE");
+  Serial.println();
   Serial.println("DONE");
 }
 
@@ -975,7 +1036,26 @@ void bridgeHandle(String cmd) {
   String C = cmd; C.toUpperCase();
 
   if (C == "PING") { Serial.println("PONG"); return; }
-  if (C == "HELP") { Serial.println("CMDS: PING UID INFO RBLK <n> WBLK <n> <hex32> DUMP"); return; }
+  if (C == "HELP") { Serial.println("CMDS: PING UID INFO DUMP RBLK WBLK ADDKEY CLEARKEYS KEYSTATS"); return; }
+  if (C == "CLEARKEYS") {
+    numCustomKeys = 0;
+    Serial.println("OK KEYS 0");
+    return;
+  }
+  if (C == "KEYSTATS") {
+    Serial.print("KEYSTATS builtin="); Serial.print(NUM_DICT);
+    Serial.print(" custom="); Serial.print(numCustomKeys);
+    Serial.print(" harvested="); Serial.println(numExtra);
+    return;
+  }
+  if (C.startsWith("ADDKEY")) {
+    String hx = cmd.substring(6); hx.trim();
+    uint8_t kb[6];
+    if (!bridgeParseHex6(hx, kb)) { Serial.println("ERR KEY HEX"); return; }
+    if (!addCustomKey(kb)) { Serial.println("ERR KEY FULL"); return; }
+    Serial.print("OK KEYS "); Serial.println(numCustomKeys);
+    return;
+  }
   if (C == "UID") {
     if (!bridgeActivate()) { Serial.println("ERR NOCARD"); return; }
     Serial.print("UID "); bridgePrintHex(mfrc522.uid.uidByte, mfrc522.uid.size); Serial.println();

@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import queue
+import re
 import socket
 import threading
 import tkinter as tk
@@ -52,6 +53,12 @@ class NfcGui(tk.Tk):
         self.status = tk.StringVar(value="Select PC BRIDGE (USB) on the ESP32 OLED first.")
         settings = self._load_settings()
         self.dump_dir = tk.StringVar(value=settings.get("dump_dir", str(DEFAULT_DUMP_DIR)))
+        self.known_keys = []
+        for value in settings.get("known_keys", []):
+            key = str(value).replace(" ", "").upper()
+            if re.fullmatch(r"[0-9A-F]{12}", key) and key not in self.known_keys:
+                self.known_keys.append(key)
+        self.key_entry = tk.StringVar()
         self.write_block0 = tk.BooleanVar(value=False)
         self.write_trailers = tk.BooleanVar(value=False)
         self._build_ui()
@@ -141,6 +148,25 @@ class NfcGui(tk.Tk):
         ttk.Button(settings_buttons, text="Save settings", style="Primary.TButton", command=self._save_settings).pack(side="left", padx=(0, 8))
         ttk.Button(settings_buttons, text="Reset to ~/Dumps", command=self._reset_dump_dir).pack(side="left")
 
+        ttk.Separator(settings, orient="horizontal").pack(fill="x", pady=18)
+        ttk.Label(settings, text="Known card keys", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(settings, text="12 hexadecimal characters per MIFARE key. These are added after the built-in dictionary.", background="#ffffff").pack(anchor="w", pady=(2, 9))
+        key_row = ttk.Frame(settings, style="Card.TFrame")
+        key_row.pack(fill="x")
+        ttk.Entry(key_row, textvariable=self.key_entry, width=24, font=("monospace", 12)).pack(side="left", padx=(0, 8), ipady=4)
+        ttk.Button(key_row, text="Add key", command=self._add_known_key).pack(side="left", padx=(0, 8))
+        ttk.Button(key_row, text="Import file…", command=self._import_key_file).pack(side="left", padx=(0, 8))
+        ttk.Button(key_row, text="Export…", command=self._export_key_file).pack(side="left", padx=(0, 8))
+        ttk.Button(key_row, text="Clear user keys", command=self._clear_known_keys).pack(side="left")
+        list_frame = ttk.Frame(settings, style="Card.TFrame")
+        list_frame.pack(fill="x", pady=(10, 0))
+        self.key_list = tk.Listbox(list_frame, height=4, font=("monospace", 11), selectmode="extended")
+        key_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.key_list.yview)
+        self.key_list.configure(yscrollcommand=key_scroll.set)
+        self.key_list.pack(side="left", fill="x", expand=True)
+        key_scroll.pack(side="right", fill="y")
+        self._refresh_key_list()
+
         status_row = ttk.Frame(self, padding=(24, 14, 24, 4))
         status_row.pack(fill="x")
         ttk.Label(status_row, textvariable=self.status).pack(side="left")
@@ -175,7 +201,10 @@ class NfcGui(tk.Tk):
         try:
             path.mkdir(parents=True, exist_ok=True)
             CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-            CONFIG_FILE.write_text(json.dumps({"dump_dir": str(path)}, indent=2) + "\n", encoding="utf-8")
+            CONFIG_FILE.write_text(json.dumps({
+                "dump_dir": str(path),
+                "known_keys": self.known_keys,
+            }, indent=2) + "\n", encoding="utf-8")
         except OSError as exc:
             messagebox.showerror("ESP32 NFC", f"Could not save settings:\n{exc}")
             return
@@ -197,6 +226,72 @@ class NfcGui(tk.Tk):
         path = Path(self.dump_dir.get()).expanduser()
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    def _refresh_key_list(self):
+        if not hasattr(self, "key_list"):
+            return
+        self.key_list.delete(0, "end")
+        for key in self.known_keys:
+            self.key_list.insert("end", key)
+
+    def _sync_known_keys(self, ser):
+        response = send(ser, "CLEARKEYS")
+        if not response or response[0].startswith("ERR"):
+            raise RuntimeError("ESP32 rejected CLEARKEYS")
+        for key in self.known_keys:
+            response = send(ser, f"ADDKEY {key}")
+            if not response or response[0].startswith("ERR"):
+                raise RuntimeError(f"ESP32 rejected known key {key}")
+        return f"Uploaded {len(self.known_keys)} user key(s) to ESP32."
+
+    def _sync_keys_if_connected(self):
+        if self.ser is not None and self.ser.is_open and not self.busy:
+            self._run("Uploading known keys…", lambda: self._sync_known_keys(self.ser))
+
+    def _add_known_key(self):
+        key = re.sub(r"[^0-9A-Fa-f]", "", self.key_entry.get()).upper()
+        if not re.fullmatch(r"[0-9A-F]{12}", key):
+            messagebox.showerror("ESP32 NFC", "A MIFARE key must contain exactly 12 hexadecimal characters.")
+            return
+        if key not in self.known_keys:
+            self.known_keys.append(key)
+        self.key_entry.set("")
+        self._refresh_key_list()
+        self._save_settings()
+        self._sync_keys_if_connected()
+
+    def _import_key_file(self):
+        path = filedialog.askopenfilename(title="Import known MIFARE keys", filetypes=[("Key/text files", "*.keys *.txt *.dic"), ("All files", "*")])
+        if not path:
+            return
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            messagebox.showerror("ESP32 NFC", str(exc))
+            return
+        added = 0
+        for line in text.splitlines():
+            compact = re.sub(r"[^0-9A-Fa-f]", "", line).upper()
+            if re.fullmatch(r"[0-9A-F]{12}", compact) and compact not in self.known_keys:
+                self.known_keys.append(compact)
+                added += 1
+        self._refresh_key_list()
+        self._save_settings()
+        self._sync_keys_if_connected()
+        messagebox.showinfo("ESP32 NFC", f"Imported {added} new known key(s).")
+
+    def _export_key_file(self):
+        path = filedialog.asksaveasfilename(title="Export known MIFARE keys", initialfile="my-known.keys", defaultextension=".keys", filetypes=[("Key files", "*.keys"), ("Text files", "*.txt")])
+        if path:
+            Path(path).write_text("\n".join(self.known_keys) + ("\n" if self.known_keys else ""), encoding="utf-8")
+
+    def _clear_known_keys(self):
+        if not messagebox.askyesno("ESP32 NFC", "Remove all user-supplied keys?\nThe built-in common dictionary is not affected."):
+            return
+        self.known_keys.clear()
+        self._refresh_key_list()
+        self._save_settings()
+        self._sync_keys_if_connected()
 
     def refresh_ports(self):
         ports = [p.device for p in list_ports.comports() if "ttyUSB" in p.device or "ttyACM" in p.device]
@@ -266,6 +361,7 @@ class NfcGui(tk.Tk):
         if self.ser is not None and self.ser.is_open:
             return self.ser
         self.ser = open_bridge(self.port.get())
+        self._sync_known_keys(self.ser)
         return self.ser
 
     def _run(self, label, fn):
@@ -355,7 +451,8 @@ class NfcGui(tk.Tk):
             if block_count == 0:
                 raise RuntimeError("Invalid dump: no card blocks were received. No file was saved.")
             Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
-            return f"Dump complete: {block_count} blocks\nSaved to: {path}"
+            locked = next((line.partition(" ")[2] for line in lines if line.startswith("LOCKED ")), "unknown")
+            return f"Dump complete: {block_count} blocks\nLocked sectors: {locked}\nSaved to: {path}"
 
         self._run("Reading card and trying known keys…", work)
 
