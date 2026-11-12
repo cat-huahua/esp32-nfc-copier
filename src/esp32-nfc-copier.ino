@@ -219,9 +219,17 @@ String uidToStr(uint8_t *uid, uint8_t len) {
 
 // ================= 卡检测 =================
 bool waitForCard(uint32_t timeoutMs) {
+  // REQA/IsNewCardPresent ignores cards previously put in HALT by UID/INFO.
+  // Normalize any active card to HALT, then use WUPA + SELECT so idle, halted,
+  // and previously-read cards are all detected reliably.
+  mfrc522.PCD_StopCrypto1();
+  mfrc522.PICC_HaltA();
   uint32_t start = millis();
   while (millis() - start < timeoutMs) {
-    if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) return true;
+    byte atqa[2]; byte atqaSize = sizeof(atqa);
+    MFRC522::StatusCode wake = mfrc522.PICC_WakeupA(atqa, &atqaSize);
+    if ((wake == MFRC522::STATUS_OK || wake == MFRC522::STATUS_COLLISION) &&
+        mfrc522.PICC_Select(&(mfrc522.uid), 0) == MFRC522::STATUS_OK) return true;
     delay(50);
   }
   return false;
@@ -932,7 +940,7 @@ void doDelete() {
 // 设备端按 BTN1 退出该模式。
 
 bool bridgeActivate() {
-  return mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial();
+  return waitForCard(800);
 }
 
 void bridgePrintHex(uint8_t *d, uint8_t n) {
