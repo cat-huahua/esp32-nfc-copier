@@ -155,7 +155,7 @@ bool    imgKeyKnown[MAX_SECTORS];
 // ---------- 菜单 ----------
 enum Menu { MENU_INFO, MENU_READ, MENU_W_G2, MENU_W_G1A, MENU_SAVE, MENU_LOAD, MENU_DELETE, MENU_BRIDGE, MENU_COUNT };
 const char* menuNames[MENU_COUNT] = {
-  "INFO / UID", "READ card", "WRITE standard", "WRITE Gen1a",
+  "INFO / UID", "READ card", "WRITE Gen2 FULL", "WRITE Gen1a",
   "SAVE to flash", "LOAD from flash", "DELETE saved", "PC BRIDGE (USB)"
 };
 int menuIndex = 0;
@@ -450,42 +450,89 @@ bool readCard() {
   return hasData;
 }
 
-// ================= WRITE (standard / Gen2-compatible data) =================
+// ================= WRITE (Gen2 magic card, full clone) =================
 void buildTrailer(int sector, uint8_t out[16]);   // 前向声明(定义在本文件后面)
 bool writeCardGen2() {
   if (!hasData) { showLines("No data in buffer", "READ/LOAD first"); delay(2000); return false; }
-  showLines("WRITE Gen2:", "Tap TARGET card...");
+
+  // Full clone must never silently skip unknown source blocks or keys.
+  for (int blk = 0; blk < cardBlocks; blk++) {
+    if (!blockValid[blk]) {
+      showLines("SOURCE INCOMPLETE", "READ had failed blocks", "nothing was written");
+      delay(2500);
+      return false;
+    }
+  }
+  for (int sector = 0; sector < cardSectors; sector++) {
+    if (!imgKeyKnown[sector]) {
+      showLines("SOURCE INCOMPLETE", "missing sector key", "nothing was written");
+      delay(2500);
+      return false;
+    }
+  }
+
+  showLines("WRITE Gen2 FULL:", "Tap MAGIC card...");
   if (!waitForCard(10000)) { showLines("WRITE FAILED", "no card (timeout)"); delay(1500); return false; }
 
-  int okBlocks = 0, failBlocks = 0, skipped = 0;
+  MFRC522::PICC_Type targetType = mfrc522.PICC_GetType(mfrc522.uid.sak);
+  bool sameGeometry =
+      (targetType == MFRC522::PICC_TYPE_MIFARE_MINI && cardBlocks == 20) ||
+      (targetType == MFRC522::PICC_TYPE_MIFARE_1K   && cardBlocks == 64) ||
+      (targetType == MFRC522::PICC_TYPE_MIFARE_4K   && cardBlocks == 256);
+  if (!sameGeometry) {
+    showLines("TARGET MISMATCH", "card size/type differs", "nothing was written");
+    mfrc522.PICC_HaltA(); mfrc522.PCD_StopCrypto1();
+    delay(2500);
+    return false;
+  }
+
+  // Preflight every target sector before changing anything. findSectorKey
+  // stores the target's current key/type in sectorKey[]/sectorKeyType[].
   for (int sector = 0; sector < cardSectors; sector++) {
-    // Find a usable target-card key. Works for normal writable MIFARE Classic
-    // cards as well as Gen2 cards when access bits permit data writes.
-    int ki = findSectorKey(sector);
-    if (ki < 0) { failBlocks += secBlockCount(sector); continue; }
+    char l2[24]; snprintf(l2, sizeof(l2), "sector %d/%d", sector + 1, cardSectors);
+    showLines("Checking target...", l2);
+    if (findSectorKey(sector) < 0) {
+      showLines("TARGET AUTH FAIL", l2, "nothing was written");
+      mfrc522.PICC_HaltA(); mfrc522.PCD_StopCrypto1();
+      delay(2500);
+      return false;
+    }
+  }
+
+  int okBlocks = 0, failBlocks = 0;
+  for (int sector = 0; sector < cardSectors; sector++) {
+    if (!cardReselect() ||
+        mfrc522.PCD_Authenticate(sectorKeyType[sector], secTrailer(sector),
+                                &sectorKey[sector], &(mfrc522.uid)) != MFRC522::STATUS_OK) {
+      failBlocks += secBlockCount(sector);
+      break;
+    }
 
     int f = secFirstBlock(sector), n = secBlockCount(sector);
-    // Safe standard write: never touch manufacturer block 0 or sector trailers.
-    // Writing either on an ordinary card fails or can change keys/access bits.
+    // Write every data block, including manufacturer block 0 on Gen2 magic.
     for (int j = 0; j < n - 1; j++) {
       int blk = f + j;
-      if (blk == 0)            { skipped++; continue; }
-      if (!blockValid[blk]) { skipped++; continue; }     // 无效数据不写
       if (mfrc522.MIFARE_Write(blk, cardData[blk], 16) == MFRC522::STATUS_OK) okBlocks++;
       else failBlocks++;
     }
-    skipped++;                                            // trailer intentionally skipped
+
+    // Write the sector trailer last, after which the target uses source keys.
+    uint8_t trailerData[16];
+    buildTrailer(sector, trailerData);
+    if (mfrc522.MIFARE_Write(secTrailer(sector), trailerData, 16) == MFRC522::STATUS_OK) okBlocks++;
+    else failBlocks++;
+
     char l2[24]; snprintf(l2, sizeof(l2), "sector %d/%d", sector + 1, cardSectors);
-    showLines("Writing...", l2);
+    showLines("Cloning Gen2...", l2);
   }
   mfrc522.PICC_HaltA(); mfrc522.PCD_StopCrypto1();
 
-  char l2[24], l3[24];
+  char l2[24];
   snprintf(l2, sizeof(l2), "OK:%d FAIL:%d", okBlocks, failBlocks);
-  snprintf(l3, sizeof(l3), "skip:%d (no data)", skipped);
-  showLines("WRITE DONE", l2, l3, "data blocks only");
+  showLines(failBlocks ? "CLONE FAILED" : "CLONE COMPLETE", l2,
+            "UID + data + keys", "no blocks skipped");
   delay(3000);
-  return true;
+  return failBlocks == 0;
 }
 
 // 组装写入克隆卡的尾块: 读回来的 KeyA 恒为屏蔽的 00, 这里回填发现的真密钥,

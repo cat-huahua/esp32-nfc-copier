@@ -85,7 +85,7 @@ pio device monitor   # 串口监视 115200
 |----|------|
 | `INFO`        | 贴卡看 UID / 类型,先确认是不是 MIFARE 1K |
 | `READ`        | 贴**源卡**,读全部 16 扇区进内存;逐块记录「是否读成功」 |
-| `WRITE standard` | 安全写普通 MIFARE 数据块;跳过块0、密钥和访问位 |
+| `WRITE Gen2 FULL` | Gen2 magic 卡完整克隆:块0、全部数据、密钥和访问位;不跳块 |
 | `WRITE Gen1a` | **后门写**。`0x40/0x43` 解锁后整卡克隆,含块0(UID)与密钥块 |
 | `SAVE`        | 把内存缓冲存到 flash 槽位(0–3) |
 | `LOAD`        | 从 flash 槽位读回内存 |
@@ -98,7 +98,7 @@ pio device monitor   # 串口监视 115200
 数据存在 ESP32 内部 NVS(Preferences),掉电不丢;每槽含 1024B 全卡数据 + 有效位 + UID。
 
 ## Gen1a vs Gen2 magic 卡
-- **普通卡 / Gen2 数据写入**:使用 `WRITE standard`;只写数据块,不碰 UID 或密钥块。
+- **Gen2(CUID/UID 可写)**:使用 `WRITE Gen2 FULL`;写块0、全部数据块和扇区尾块。写前会检查源镜像完整并认证目标全部扇区,检查失败则一块不写。
 - **Gen1a(后门卡)**:块0 写不进去,需要先发 `0x40`(7-bit)+`0x43` 解锁后门,再无认证写任意块 → 用 `WRITE Gen1a`。
 - 分不清就先试 `WRITE Gen1a`,解锁失败会提示「not a Gen1a card」,再改用 `WRITE Gen2`。
 
@@ -183,7 +183,7 @@ claude mcp add nfc -- python3 ~/esp32-nfc-copier/mcp/nfc_mcp.py
 
 ## 重要限制
 - 用**两级密钥字典 + KEY A/B + 密钥收割**尝试认证;字典外的真·随机密钥仍读不出(显示 `key unknown`),需 Proxmark 的 nested/darkside,RC522 做不到。
-- `WRITE standard` 安全写数据块并跳过块0和扇区尾块;`WRITE Gen1a` 才执行完整克隆并回填真密钥。源卡没读到的扇区会跳过而非写零。
+- `WRITE Gen2 FULL` 与 `WRITE Gen1a` 都用于兼容 magic 卡的完整克隆。Gen2 写前要求源卡所有块和密钥完整,否则拒绝开始,不会静默跳块。
 - 加密门禁卡 / 滚动码 / DESFire / CPU 卡 / 非 Type-A(Type-B / 15693 / FeliCa)/ 125kHz「ID 卡」**无法复制**——RC522 硬件与协议限制,非代码问题。
 - flash 里的卡用菜单 `DELETE saved` 删除(动态计数);要全清可在 setup 里调用 `prefs.begin("nfc",false); prefs.clear(); prefs.end();` 烧一次再删掉。
 
