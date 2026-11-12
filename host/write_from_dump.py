@@ -21,7 +21,7 @@ import re
 import argparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from nfc_host import open_serial, send, find_port  # noqa: E402
+from nfc_host import open_bridge, send, find_port  # noqa: E402
 from serial.tools import list_ports  # noqa: E402
 
 BLK_RE = re.compile(r'^BLK\s+(\d+)\s+([0-9a-fA-F]{32})\s*$')
@@ -97,12 +97,9 @@ def main():
         sys.exit("找不到串口, 用 -p 指定 (可用: " +
                  ", ".join(p.device for p in list_ports.comports()) + ")")
 
-    ser = open_serial(port)
+    ser = open_bridge(port)
     ok = fail = 0
     try:
-        pong = send(ser, "ping")
-        if not any("PONG" in x for x in pong):
-            print("# 警告: 没收到 PONG, 确认 ESP32 已进 PC BRIDGE 且卡贴好")
         for b in targets:
             resp = send(ser, f"WBLK {b} {blocks[b]}")
             line = resp[0] if resp else "ERR NORESP"

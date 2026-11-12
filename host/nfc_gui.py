@@ -12,56 +12,108 @@ from tkinter import filedialog, messagebox, ttk
 
 from serial.tools import list_ports
 
-from nfc_host import find_port, open_serial, send
+from nfc_host import find_port, open_bridge, send
 from write_from_dump import is_trailer, parse_dump
 
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DUMP_DIR = Path(os.environ.get("NFC_DUMP_DIR", ROOT / "dumps")).expanduser()
+DEFAULT_DUMP_DIR = Path(os.environ.get("NFC_DUMP_DIR", "~/Dumps")).expanduser()
 
 
 class NfcGui(tk.Tk):
     def __init__(self, mode="bridge"):
         super().__init__()
         self.title("ESP32 NFC Bridge")
-        self.geometry("760x560")
-        self.minsize(650, 470)
+        self.geometry("900x650")
+        self.minsize(760, 560)
         self.events = queue.Queue()
         self.busy = False
+        self.ser = None
         self.port = tk.StringVar()
         self.status = tk.StringVar(value="Select PC BRIDGE (USB) on the ESP32 OLED first.")
         self.write_block0 = tk.BooleanVar(value=False)
         self.write_trailers = tk.BooleanVar(value=False)
         self._build_ui()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.port_box.bind("<<ComboboxSelected>>", lambda _event: self._port_changed())
         self.refresh_ports()
         self.after(80, self._poll_events)
+        # Connect once at startup.  Opening FT232 may reset the ESP32 once, but
+        # subsequent action buttons reuse this connection and do not reset it.
+        self.after(450, self.ping)
         if mode == "dump":
-            self.after(250, self.dump_to_file)
+            self.notebook.select(1)
         elif mode == "write":
-            self.after(250, self.write_from_file)
+            self.notebook.select(2)
 
     def _build_ui(self):
-        top = ttk.Frame(self, padding=12)
-        top.pack(fill="x")
-        ttk.Label(top, text="Serial port:").pack(side="left")
-        self.port_box = ttk.Combobox(top, textvariable=self.port, width=28, state="readonly")
-        self.port_box.pack(side="left", padx=8)
-        ttk.Button(top, text="Refresh", command=self.refresh_ports).pack(side="left")
-        ttk.Button(top, text="Test connection", command=self.ping).pack(side="left", padx=8)
+        style = ttk.Style(self)
+        style.theme_use("clam")
+        style.configure("TFrame", background="#f4f6fa")
+        style.configure("Card.TFrame", background="#ffffff")
+        style.configure("Header.TLabel", background="#173b65", foreground="white", font=("Sans", 22, "bold"))
+        style.configure("SubHeader.TLabel", background="#173b65", foreground="#c9dbef", font=("Sans", 10))
+        style.configure("Title.TLabel", background="#ffffff", foreground="#172033", font=("Sans", 13, "bold"))
+        style.configure("Primary.TButton", font=("Sans", 10, "bold"), padding=(16, 10))
+        style.configure("TNotebook", background="#f4f6fa", borderwidth=0)
+        style.configure("TNotebook.Tab", padding=(18, 9), font=("Sans", 10, "bold"))
+        self.configure(background="#f4f6fa")
 
-        actions = ttk.LabelFrame(self, text="Card actions", padding=12)
-        actions.pack(fill="x", padx=12, pady=(0, 10))
-        ttk.Button(actions, text="Read UID", command=self.read_uid).grid(row=0, column=0, padx=5, pady=5)
-        ttk.Button(actions, text="Card info", command=self.card_info).grid(row=0, column=1, padx=5, pady=5)
-        ttk.Button(actions, text="Dump to file…", command=self.dump_to_file).grid(row=0, column=2, padx=5, pady=5)
-        ttk.Button(actions, text="Write from dump…", command=self.write_from_file).grid(row=0, column=3, padx=5, pady=5)
-        ttk.Checkbutton(actions, text="Include block 0 (Gen2 only)", variable=self.write_block0).grid(row=1, column=0, columnspan=2, sticky="w", padx=5)
-        ttk.Checkbutton(actions, text="Include sector trailers / keys", variable=self.write_trailers).grid(row=1, column=2, columnspan=2, sticky="w", padx=5)
+        header = tk.Frame(self, bg="#173b65", height=94)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        ttk.Label(header, text="ESP32 NFC Bridge", style="Header.TLabel").pack(anchor="w", padx=22, pady=(15, 0))
+        ttk.Label(header, text="RC522 reader • Linux USB bridge • MIFARE Classic", style="SubHeader.TLabel").pack(anchor="w", padx=23)
 
-        ttk.Label(self, textvariable=self.status, padding=(12, 2)).pack(fill="x")
-        log_frame = ttk.Frame(self, padding=(12, 4, 12, 12))
+        connection = ttk.Frame(self, style="Card.TFrame", padding=14)
+        connection.pack(fill="x", padx=18, pady=(16, 10))
+        ttk.Label(connection, text="Connection", style="Title.TLabel").pack(side="left", padx=(0, 18))
+        self.port_box = ttk.Combobox(connection, textvariable=self.port, width=25, state="readonly")
+        self.port_box.pack(side="left", padx=(0, 8))
+        self.port_box.bind("<<ComboboxSelected>>", lambda _event: self._port_changed())
+        ttk.Button(connection, text="Refresh", command=self.refresh_ports).pack(side="left")
+        self.test_button = ttk.Button(connection, text="Connect", command=self.ping)
+        self.test_button.pack(side="left", padx=8)
+        self.connection_badge = tk.Label(connection, text="●  Not tested", bg="#ffffff", fg="#7a8491", font=("Sans", 10, "bold"))
+        self.connection_badge.pack(side="right")
+
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill="x", padx=18)
+        reader = ttk.Frame(self.notebook, style="Card.TFrame", padding=16)
+        dump = ttk.Frame(self.notebook, style="Card.TFrame", padding=16)
+        write = ttk.Frame(self.notebook, style="Card.TFrame", padding=16)
+        self.notebook.add(reader, text="Reader")
+        self.notebook.add(dump, text="Dump")
+        self.notebook.add(write, text="Write back")
+
+        ttk.Label(reader, text="Read a card", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(reader, text="Keep the card flat against the RC522 antenna while reading.", background="#ffffff").pack(anchor="w", pady=(2, 12))
+        row = ttk.Frame(reader, style="Card.TFrame")
+        row.pack(anchor="w")
+        ttk.Button(row, text="Read UID", style="Primary.TButton", command=self.read_uid).pack(side="left", padx=(0, 8))
+        ttk.Button(row, text="Card information", command=self.card_info).pack(side="left")
+
+        ttk.Label(dump, text="Create a card dump", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(dump, text="Reads known sectors, discovered keys and block data into one validated file.", background="#ffffff").pack(anchor="w", pady=(2, 12))
+        ttk.Button(dump, text="Choose destination and start…", style="Primary.TButton", command=self.dump_to_file).pack(anchor="w")
+
+        ttk.Label(write, text="Write from a dump", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(write, text="Safe defaults skip UID block 0 and sector key trailers.", background="#ffffff").pack(anchor="w", pady=(2, 8))
+        ttk.Checkbutton(write, text="Include block 0 (Gen2 magic card only)", variable=self.write_block0).pack(anchor="w")
+        ttk.Checkbutton(write, text="Include sector trailers and keys", variable=self.write_trailers).pack(anchor="w")
+        ttk.Button(write, text="Choose dump and write…", style="Primary.TButton", command=self.write_from_file).pack(anchor="w", pady=(10, 0))
+
+        status_row = ttk.Frame(self, padding=(18, 12, 18, 3))
+        status_row.pack(fill="x")
+        ttk.Label(status_row, textvariable=self.status).pack(side="left")
+        self.progress = ttk.Progressbar(status_row, mode="indeterminate", length=180)
+        self.progress.pack(side="right")
+
+        log_frame = ttk.LabelFrame(self, text="Activity", padding=(10, 8))
+        log_frame.pack(fill="both", expand=True, padx=18, pady=(3, 16))
         log_frame.pack(fill="both", expand=True)
-        self.log = tk.Text(log_frame, wrap="word", state="disabled", font=("monospace", 10))
+        self.log = tk.Text(log_frame, wrap="word", state="disabled", font=("monospace", 10),
+                           bg="#101722", fg="#d8e2ef", insertbackground="white", relief="flat", padx=10, pady=8)
         scroll = ttk.Scrollbar(log_frame, orient="vertical", command=self.log.yview)
         self.log.configure(yscrollcommand=scroll.set)
         self.log.pack(side="left", fill="both", expand=True)
@@ -85,6 +137,28 @@ class NfcGui(tk.Tk):
             self.port.set("")
         self.status.set(f"Found {len(ports)} USB serial port(s)." if ports else "No ESP32 USB serial port found.")
 
+    def _disconnect(self):
+        if self.ser is not None:
+            try:
+                self.ser.close()
+            except Exception:
+                pass
+            self.ser = None
+
+    def _port_changed(self):
+        self._disconnect()
+        self.connection_badge.configure(text="●  Not connected", fg="#7a8491")
+
+    def _on_close(self):
+        self._disconnect()
+        self.destroy()
+
+    def _ensure_connection(self):
+        if self.ser is not None and self.ser.is_open:
+            return self.ser
+        self.ser = open_bridge(self.port.get())
+        return self.ser
+
     def _run(self, label, fn):
         if self.busy:
             messagebox.showinfo("ESP32 NFC", "Another NFC operation is still running.")
@@ -94,6 +168,7 @@ class NfcGui(tk.Tk):
             return
         self.busy = True
         self.status.set(label)
+        self.progress.start(12)
 
         def worker():
             try:
@@ -109,12 +184,15 @@ class NfcGui(tk.Tk):
             while True:
                 kind, value = self.events.get_nowait()
                 self.busy = False
+                self.progress.stop()
                 if kind == "error":
                     self.status.set("Operation failed.")
+                    self.connection_badge.configure(text="●  Error", fg="#b42318")
                     self._append(f"ERROR: {value}")
                     messagebox.showerror("ESP32 NFC", value)
                 else:
                     self.status.set("Ready.")
+                    self.connection_badge.configure(text="●  Connected", fg="#16834a")
                     if value:
                         self._append(value)
         except queue.Empty:
@@ -122,11 +200,11 @@ class NfcGui(tk.Tk):
         self.after(80, self._poll_events)
 
     def _command(self, command, timeout=None):
-        ser = open_serial(self.port.get())
         try:
-            lines = send(ser, command, timeout=timeout)
-        finally:
-            ser.close()
+            lines = send(self._ensure_connection(), command, timeout=timeout)
+        except Exception:
+            self._disconnect()
+            raise
         if not lines:
             raise RuntimeError("No response. Select PC BRIDGE (USB) on the OLED and close any serial monitor.")
         if lines[0].startswith("ERR"):
@@ -134,7 +212,7 @@ class NfcGui(tk.Tk):
         return lines
 
     def ping(self):
-        self._run("Testing connection…", lambda: "\n".join(self._command("PING")))
+        self._run("Testing connection…", lambda: "Connected: " + "\n".join(self._command("PING")))
 
     def read_uid(self):
         self._run("Hold a card on the RC522…", lambda: "\n".join(self._command("UID")))
@@ -157,8 +235,15 @@ class NfcGui(tk.Tk):
 
         def work():
             lines = self._command("DUMP", timeout=120)
+            if lines[-1] != "DONE":
+                raise RuntimeError("Incomplete dump: ESP32 did not send DONE. No file was saved.")
+            if not any(line.startswith("UID ") for line in lines):
+                raise RuntimeError("Invalid dump: UID is missing. No file was saved.")
+            block_count = sum(line.startswith("BLK ") for line in lines)
+            if block_count == 0:
+                raise RuntimeError("Invalid dump: no card blocks were received. No file was saved.")
             Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
-            return f"Saved {len(lines)} lines to:\n{path}"
+            return f"Dump complete: {block_count} blocks\nSaved to: {path}"
 
         self._run("Reading card and trying known keys…", work)
 
@@ -192,13 +277,10 @@ class NfcGui(tk.Tk):
             return
 
         def work():
-            ser = open_serial(self.port.get())
             ok = fail = 0
             output = []
             try:
-                pong = send(ser, "PING")
-                if not any("PONG" in line for line in pong):
-                    raise RuntimeError("ESP32 is not in PC BRIDGE (USB) mode.")
+                ser = self._ensure_connection()
                 for block in targets:
                     response = send(ser, f"WBLK {block} {blocks[block]}")
                     line = response[0] if response else "ERR NO RESPONSE"
@@ -207,8 +289,9 @@ class NfcGui(tk.Tk):
                         ok += 1
                     else:
                         fail += 1
-            finally:
-                ser.close()
+            except Exception:
+                self._disconnect()
+                raise
             output.append(f"Finished: {ok} OK, {fail} failed")
             return "\n".join(output)
 

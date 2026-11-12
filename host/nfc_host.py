@@ -55,6 +55,31 @@ def open_serial(port):
     return ser
 
 
+def open_bridge(port, timeout=6.0):
+    """Open the port and wait until firmware answers PING.
+
+    FT232-based ESP32 boards can reset as the port opens.  The firmware returns
+    to bridge mode automatically, but it still needs a moment to boot.  Sending
+    the real command immediately was the main cause of failed/empty dumps.
+    """
+    ser = open_serial(port)
+    deadline = time.monotonic() + timeout
+    try:
+        time.sleep(0.25)
+        while time.monotonic() < deadline:
+            if any(line == "PONG" for line in send(ser, "PING", wait=0.08, timeout=0.7)):
+                return ser
+            time.sleep(0.15)
+    except Exception:
+        ser.close()
+        raise
+    ser.close()
+    raise RuntimeError(
+        "ESP32 did not enter PC BRIDGE. Select PC BRIDGE (USB) on the OLED "
+        "and close serial monitors."
+    )
+
+
 def send(ser, cmd, wait=0.4, timeout=None):
     """发一条命令, 收集回应行"""
     command = cmd.strip().upper()
@@ -74,11 +99,11 @@ def send(ser, cmd, wait=0.4, timeout=None):
         if line:
             out.append(line)
             # DUMP 以 DONE 结束; 其它命令一般一行就够
-            if line == "DONE":
+            if line == "DONE" or line.startswith("ERR"):
                 break
             if command != "DUMP":
                 break
-        elif out:
+        elif out and command != "DUMP":
             break
     return out
 
@@ -96,10 +121,8 @@ def main():
         sys.exit("找不到串口, 用 -p 指定 (可用串口: " +
                  ", ".join(p.device for p in list_ports.comports()) + ")")
 
-    ser = open_serial(port)
+    ser = open_bridge(port)
     try:
-        time.sleep(0.3)
-        ser.reset_input_buffer()
         print(f"# 已连接 {port} @ {BAUD}")
 
         if args.oneshot:
@@ -108,6 +131,8 @@ def main():
                 print(line)
             if not lines:
                 sys.exit("ESP32 没有回应。请先在 OLED 选择 PC BRIDGE (USB)。")
+            if args.oneshot[0].lower() == "dump" and (not lines or lines[-1] != "DONE"):
+                sys.exit("dump 不完整: 未收到 DONE, 文件未保存")
             if args.out:
                 with open(args.out, "w") as f:
                     f.write("\n".join(lines) + "\n")

@@ -135,7 +135,7 @@ python3 host/nfc_gui.py --mode write    # open the write-back workflow
 | 脚本 | 桌面图标 | 作用 |
 |------|----------|------|
 | `host/nfc_host.py` | ESP32 NFC 桥接器 | 交互:`uid/info/dump/rblk/wblk` |
-| `host/dump-to-file.sh` → `write_from...`| ESP32 NFC 一键 dump | 整卡存 `dumps/card-<时间戳>.dump` |
+| `host/dump-to-file.sh` → `write_from...`| ESP32 NFC 一键 dump | 整卡存 `~/Dumps/card-<时间戳>.dump` |
 | `host/write_from_dump.py` | ESP32 NFC 写回卡 | 选 `.dump` 写回卡(默认跳过 UID/密钥块) |
 
 - 桌面图标位于 `~/桌面/`,应用菜单搜 "NFC" 也能找到。
@@ -151,7 +151,7 @@ python3 host/nfc_gui.py --mode write    # open the write-back workflow
 
 ## dump 保存位置
 - `ESP32 NFC 一键 dump` 桌面图标会弹 kdialog 让你**自选保存位置/文件名**。
-- **默认目录**可配置:设环境变量 `NFC_DUMP_DIR`(否则用项目内 `dumps/`)。例如:
+- **默认目录**是 `~/Dumps`,也可用环境变量 `NFC_DUMP_DIR` 修改。例如:
   ```
   export NFC_DUMP_DIR="$HOME/nfc-dumps"      # 加到 ~/.zshrc 永久生效
   ```
