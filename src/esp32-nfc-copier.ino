@@ -222,12 +222,20 @@ bool gen1aUnlock() {
 }
 
 // ================= READ =================
-// 重新选中当前卡(试下一个密钥前必须重激活, 否则认证失败后卡会 halt)
+// 重新选中当前卡。试下一个密钥前必须让卡回到可选状态:
+// 认证失败会让卡 halt, 而刚激活的卡是 active —— 两种状态 WUPA/REQA 都未必应答。
+// 最稳的办法: 关一下天线让卡断电复位到 IDLE, 再 REQA + Select 选回同一张卡。
 bool cardReselect() {
   mfrc522.PCD_StopCrypto1();
-  byte atqa[2]; byte sz = sizeof(atqa);
-  if (mfrc522.PICC_WakeupA(atqa, &sz) != MFRC522::STATUS_OK) return false;
-  return mfrc522.PICC_Select(&(mfrc522.uid), 0) == MFRC522::STATUS_OK;
+  mfrc522.PCD_AntennaOff();
+  delayMicroseconds(800);            // 断电让卡复位
+  mfrc522.PCD_AntennaOn();
+  delay(5);                          // 等卡重新上电(4K 卡电容大, 多给点时间)
+  for (int i = 0; i < 5; i++) {
+    if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) return true;
+    delay(2);
+  }
+  return false;
 }
 
 // 把一个候选 6 字节密钥加入 extraKeys(去重)
@@ -261,6 +269,18 @@ int tryKeyOnSector(int sector, const uint8_t *kb) {
   for (int kt = 0; kt < 2; kt++) {
     uint8_t keyType = (kt == 0) ? MFRC522::PICC_CMD_MF_AUTH_KEY_A
                                 : MFRC522::PICC_CMD_MF_AUTH_KEY_B;
+    // 先直接认证: 读通上一个扇区后卡仍在 ACTIVE, 无需断电重选。
+    // 断电重选很慢(每扇区一次), 4K 卡有 40 扇区 → 40 次天线开关, 极易中途掉卡。
+    // 直接认证让常见默认密钥卡零重选, 只在认证失败(halt)后才重选一次。
+    mfrc522.PCD_StopCrypto1();
+    if (mfrc522.PCD_Authenticate(keyType, trailer, &k, &(mfrc522.uid))
+        == MFRC522::STATUS_OK) {
+      sectorKey[sector] = k;
+      sectorKeyType[sector] = keyType;
+      sectorKeyKnown[sector] = true;
+      return 1;
+    }
+    // 认证失败会让卡 halt, 这时才断电重选再试一次
     if (!cardReselect()) return -1;
     if (mfrc522.PCD_Authenticate(keyType, trailer, &k, &(mfrc522.uid))
         == MFRC522::STATUS_OK) {
@@ -389,7 +409,8 @@ bool readCard() {
   return hasData;
 }
 
-// ================= WRITE (Gen2 标准) =================
+// ================= WRITE (Gen2, 完整克隆) =================
+void buildTrailer(int sector, uint8_t out[16]);   // 前向声明(定义在本文件后面)
 bool writeCardGen2() {
   if (!hasData) { showLines("No data in buffer", "READ/LOAD first"); delay(2000); return false; }
   showLines("WRITE Gen2:", "Tap TARGET card...");
@@ -397,17 +418,28 @@ bool writeCardGen2() {
 
   int okBlocks = 0, failBlocks = 0, skipped = 0;
   for (int sector = 0; sector < cardSectors; sector++) {
-    // 用字典在目标卡上找该扇区可用密钥(空白卡默认 FF 一次就中)
+    // 用字典在目标卡上找该扇区可用密钥(空白 Gen2 卡默认 FF 一次就中)
     int ki = findSectorKey(sector);
     if (ki < 0) { failBlocks += secBlockCount(sector); continue; }
 
     int f = secFirstBlock(sector), n = secBlockCount(sector);
-    for (int j = 0; j < n; j++) {
+    // 先写数据块(扇区0的块0=UID, Gen2 CUID 卡可直接写)
+    for (int j = 0; j < n - 1; j++) {
       int blk = f + j;
-      if (isTrailer(blk))   { skipped++; continue; }     // 跳过密钥块,防锁死
       if (!blockValid[blk]) { skipped++; continue; }     // 无效数据不写
       if (mfrc522.MIFARE_Write(blk, cardData[blk], 16) == MFRC522::STATUS_OK) okBlocks++;
       else failBlocks++;                                  // 块0在普通卡失败属正常
+    }
+    // 最后写密钥块(回填源卡真密钥), Gen2 卡也能完整克隆。
+    // 放在扇区末尾: 写后该扇区密钥变源卡密钥, 但下一扇区仍是目标默认密钥, 互不影响。
+    int trailer = secTrailer(sector);
+    if (blockValid[trailer]) {
+      uint8_t tr[16];
+      buildTrailer(sector, tr);
+      if (mfrc522.MIFARE_Write(trailer, tr, 16) == MFRC522::STATUS_OK) okBlocks++;
+      else failBlocks++;                                  // 访问位拒绝则写失败, 块保持原样不砖
+    } else {
+      skipped++;
     }
     char l2[24]; snprintf(l2, sizeof(l2), "sector %d/%d", sector + 1, cardSectors);
     showLines("Writing...", l2);
@@ -416,8 +448,8 @@ bool writeCardGen2() {
 
   char l2[24], l3[24];
   snprintf(l2, sizeof(l2), "OK:%d FAIL:%d", okBlocks, failBlocks);
-  snprintf(l3, sizeof(l3), "trailer skip:%d", skipped);
-  showLines("WRITE DONE", l2, l3, "verify on reader!");
+  snprintf(l3, sizeof(l3), "skip:%d (no data)", skipped);
+  showLines("CLONE DONE", l2, l3, "UID+keys copied!");
   delay(3000);
   return true;
 }

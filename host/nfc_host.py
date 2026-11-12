@@ -55,22 +55,28 @@ def open_serial(port):
     return ser
 
 
-def send(ser, cmd, wait=0.4):
+def send(ser, cmd, wait=0.4, timeout=None):
     """发一条命令, 收集回应行"""
+    command = cmd.strip().upper()
+    # A full-card dump may try dozens of keys on every sector and the firmware
+    # also keeps the OLED result visible briefly.  Three seconds was too short
+    # and made the Linux dump launcher save an empty file.
+    if timeout is None:
+        timeout = 120.0 if command == "DUMP" else 5.0
     ser.reset_input_buffer()
     ser.write((cmd.strip() + "\n").encode())
     ser.flush()
     time.sleep(wait)
     out = []
     t0 = time.time()
-    while time.time() - t0 < 3.0:
+    while time.time() - t0 < timeout:
         line = ser.readline().decode(errors="replace").strip()
         if line:
             out.append(line)
             # DUMP 以 DONE 结束; 其它命令一般一行就够
             if line == "DONE":
                 break
-            if cmd.strip().upper() != "DUMP":
+            if command != "DUMP":
                 break
         elif out:
             break
@@ -100,10 +106,14 @@ def main():
             lines = send(ser, " ".join(args.oneshot))
             for line in lines:
                 print(line)
+            if not lines:
+                sys.exit("ESP32 没有回应。请先在 OLED 选择 PC BRIDGE (USB)。")
             if args.out:
                 with open(args.out, "w") as f:
                     f.write("\n".join(lines) + "\n")
                 print(f"# 已保存 {args.out}")
+            if any(line.startswith("ERR") for line in lines):
+                sys.exit(1)
             return
 
         # ping 确认在桥接模式
