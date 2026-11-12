@@ -478,25 +478,28 @@ bool writeCardGen2() {
   if (!waitForCard(10000)) { showLines("WRITE FAILED", "no card (timeout)"); delay(1500); return false; }
 
   MFRC522::PICC_Type targetType = mfrc522.PICC_GetType(mfrc522.uid.sak);
-  bool sameGeometry =
-      (targetType == MFRC522::PICC_TYPE_MIFARE_MINI && cardBlocks == 20) ||
-      (targetType == MFRC522::PICC_TYPE_MIFARE_1K   && cardBlocks == 64) ||
-      (targetType == MFRC522::PICC_TYPE_MIFARE_4K   && cardBlocks == 256);
-  if (!sameGeometry) {
-    showLines("TARGET MISMATCH", "card size/type differs", "write cancelled");
+  int targetBlocks = 0, targetSectors = 0;
+  if (targetType == MFRC522::PICC_TYPE_MIFARE_MINI) { targetBlocks = 20; targetSectors = 5; }
+  else if (targetType == MFRC522::PICC_TYPE_MIFARE_1K) { targetBlocks = 64; targetSectors = 16; }
+  else if (targetType == MFRC522::PICC_TYPE_MIFARE_4K) { targetBlocks = 256; targetSectors = 40; }
+  else {
+    showLines("TARGET UNSUPPORTED", "need MIFARE Classic", "write cancelled");
     mfrc522.PICC_HaltA(); mfrc522.PCD_StopCrypto1();
     delay(2500);
     return false;
   }
+  int writeBlocks = min(cardBlocks, targetBlocks);
+  int writeSectors = min(cardSectors, targetSectors);
+  int truncated = cardBlocks - writeBlocks;
 
   bool badBlock[MAX_BLOCKS];
-  for (int blk = 0; blk < cardBlocks; blk++) badBlock[blk] = !blockValid[blk];
+  for (int blk = 0; blk < writeBlocks; blk++) badBlock[blk] = !blockValid[blk];
   int writeOk = 0;
 
   // Best effort: authenticate and try every valid source block. A rejected
   // block is recorded, but does not prevent later sectors from being tried.
-  for (int sector = 0; sector < cardSectors; sector++) {
-    char l2[24]; snprintf(l2, sizeof(l2), "sector %d/%d", sector + 1, cardSectors);
+  for (int sector = 0; sector < writeSectors; sector++) {
+    char l2[24]; snprintf(l2, sizeof(l2), "sector %d/%d", sector + 1, writeSectors);
     showLines("Cloning Gen2...", l2);
     sectorKeyKnown[sector] = false;             // now stores target's old key
     if (findSectorKey(sector) < 0) {
@@ -525,7 +528,7 @@ bool writeCardGen2() {
 
   // End verification: authenticate with the source key (or the target's old
   // key if its trailer was rejected), reread every block, and compare data.
-  for (int sector = 0; sector < cardSectors; sector++) {
+  for (int sector = 0; sector < writeSectors; sector++) {
     bool sourceAuth = false, authOk = false;
     if (imgKeyKnown[sector] && cardReselect()) {
       sourceAuth = mfrc522.PCD_Authenticate(imgKeyType[sector], secTrailer(sector),
@@ -560,18 +563,23 @@ bool writeCardGen2() {
   mfrc522.PICC_HaltA(); mfrc522.PCD_StopCrypto1();
 
   int skipped = 0, firstBad[3] = {-1, -1, -1};
-  for (int blk = 0; blk < cardBlocks; blk++) {
+  for (int blk = 0; blk < writeBlocks; blk++) {
     if (badBlock[blk]) {
       if (skipped < 3) firstBad[skipped] = blk;
       skipped++;
       Serial.print("SKIPPED BLOCK "); Serial.println(blk);
     }
   }
-  char l2[24], l3[24];
+  char l2[24], l3[24], l4[24];
   snprintf(l2, sizeof(l2), "WRITE:%d SKIP:%d", writeOk, skipped);
   if (skipped == 0) snprintf(l3, sizeof(l3), "verify: ALL MATCH");
   else snprintf(l3, sizeof(l3), "first:%d,%d,%d", firstBad[0], firstBad[1], firstBad[2]);
-  showLines(skipped ? "CLONE PARTIAL" : "CLONE COMPLETE", l2, l3, "end verify done");
+  if (truncated > 0) snprintf(l4, sizeof(l4), "target limit:%d blk", writeBlocks);
+  else snprintf(l4, sizeof(l4), "end verify done");
+  Serial.print("TARGET BLOCKS "); Serial.print(targetBlocks);
+  Serial.print(" SOURCE BLOCKS "); Serial.print(cardBlocks);
+  Serial.print(" TRUNCATED "); Serial.println(truncated);
+  showLines(skipped ? "CLONE PARTIAL" : "CLONE COMPLETE", l2, l3, l4);
   delay(4000);
   return skipped == 0;
 }

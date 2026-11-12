@@ -99,6 +99,8 @@ pio device monitor   # 串口监视 115200
 
 ## Gen1a vs Gen2 magic 卡
 - **Gen2(CUID/UID 可写)**:使用 `WRITE Gen2 FULL`;目标拒绝某块时继续后续块,最后复读验证并显示 `SKIP` 总数和前几个块号。
+  源卡与目标卡容量可以不同:只写两者重叠范围。例如 4K→1K 写块0–63,
+  1K→Mini 写块0–19。超过目标容量的源块显示为 `TRUNCATED`,不算卡拒绝。
 - **Gen1a(后门卡)**:块0 写不进去,需要先发 `0x40`(7-bit)+`0x43` 解锁后门,再无认证写任意块 → 用 `WRITE Gen1a`。
 - 分不清就先试 `WRITE Gen1a`,解锁失败会提示「not a Gen1a card」,再改用 `WRITE Gen2`。
 
