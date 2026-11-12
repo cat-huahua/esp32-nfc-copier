@@ -2,6 +2,7 @@
 """Tk GUI for the ESP32 NFC PC-BRIDGE protocol."""
 
 import argparse
+import json
 import os
 import queue
 import threading
@@ -18,19 +19,22 @@ from write_from_dump import is_trailer, parse_dump
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DUMP_DIR = Path(os.environ.get("NFC_DUMP_DIR", "~/Dumps")).expanduser()
+CONFIG_FILE = Path("~/.config/esp32-nfc-copier/settings.json").expanduser()
 
 
 class NfcGui(tk.Tk):
     def __init__(self, mode="bridge"):
         super().__init__()
         self.title("ESP32 NFC Bridge")
-        self.geometry("900x650")
-        self.minsize(760, 560)
+        self.geometry("1100x760")
+        self.minsize(900, 650)
         self.events = queue.Queue()
         self.busy = False
         self.ser = None
         self.port = tk.StringVar()
         self.status = tk.StringVar(value="Select PC BRIDGE (USB) on the ESP32 OLED first.")
+        settings = self._load_settings()
+        self.dump_dir = tk.StringVar(value=settings.get("dump_dir", str(DEFAULT_DUMP_DIR)))
         self.write_block0 = tk.BooleanVar(value=False)
         self.write_trailers = tk.BooleanVar(value=False)
         self._build_ui()
@@ -49,42 +53,47 @@ class NfcGui(tk.Tk):
     def _build_ui(self):
         style = ttk.Style(self)
         style.theme_use("clam")
+        style.configure(".", font=("Sans", 11))
         style.configure("TFrame", background="#f4f6fa")
         style.configure("Card.TFrame", background="#ffffff")
-        style.configure("Header.TLabel", background="#173b65", foreground="white", font=("Sans", 22, "bold"))
-        style.configure("SubHeader.TLabel", background="#173b65", foreground="#c9dbef", font=("Sans", 10))
-        style.configure("Title.TLabel", background="#ffffff", foreground="#172033", font=("Sans", 13, "bold"))
-        style.configure("Primary.TButton", font=("Sans", 10, "bold"), padding=(16, 10))
+        style.configure("Header.TLabel", background="#173b65", foreground="white", font=("Sans", 28, "bold"))
+        style.configure("SubHeader.TLabel", background="#173b65", foreground="#c9dbef", font=("Sans", 12))
+        style.configure("Title.TLabel", background="#ffffff", foreground="#172033", font=("Sans", 17, "bold"))
+        style.configure("Primary.TButton", font=("Sans", 12, "bold"), padding=(22, 13))
+        style.configure("TButton", padding=(12, 8))
+        style.configure("TCheckbutton", font=("Sans", 11), padding=(2, 4))
         style.configure("TNotebook", background="#f4f6fa", borderwidth=0)
-        style.configure("TNotebook.Tab", padding=(18, 9), font=("Sans", 10, "bold"))
+        style.configure("TNotebook.Tab", padding=(26, 12), font=("Sans", 12, "bold"))
         self.configure(background="#f4f6fa")
 
-        header = tk.Frame(self, bg="#173b65", height=94)
+        header = tk.Frame(self, bg="#173b65", height=116)
         header.pack(fill="x")
         header.pack_propagate(False)
-        ttk.Label(header, text="ESP32 NFC Bridge", style="Header.TLabel").pack(anchor="w", padx=22, pady=(15, 0))
-        ttk.Label(header, text="RC522 reader • Linux USB bridge • MIFARE Classic", style="SubHeader.TLabel").pack(anchor="w", padx=23)
+        ttk.Label(header, text="ESP32 NFC Bridge", style="Header.TLabel").pack(anchor="w", padx=28, pady=(18, 0))
+        ttk.Label(header, text="RC522 reader • Linux USB bridge • MIFARE Classic", style="SubHeader.TLabel").pack(anchor="w", padx=29)
 
-        connection = ttk.Frame(self, style="Card.TFrame", padding=14)
-        connection.pack(fill="x", padx=18, pady=(16, 10))
+        connection = ttk.Frame(self, style="Card.TFrame", padding=18)
+        connection.pack(fill="x", padx=24, pady=(18, 12))
         ttk.Label(connection, text="Connection", style="Title.TLabel").pack(side="left", padx=(0, 18))
-        self.port_box = ttk.Combobox(connection, textvariable=self.port, width=25, state="readonly")
+        self.port_box = ttk.Combobox(connection, textvariable=self.port, width=30, state="readonly", font=("Sans", 11))
         self.port_box.pack(side="left", padx=(0, 8))
         self.port_box.bind("<<ComboboxSelected>>", lambda _event: self._port_changed())
         ttk.Button(connection, text="Refresh", command=self.refresh_ports).pack(side="left")
         self.test_button = ttk.Button(connection, text="Connect", command=self.ping)
         self.test_button.pack(side="left", padx=8)
-        self.connection_badge = tk.Label(connection, text="●  Not tested", bg="#ffffff", fg="#7a8491", font=("Sans", 10, "bold"))
+        self.connection_badge = tk.Label(connection, text="●  Not tested", bg="#ffffff", fg="#7a8491", font=("Sans", 12, "bold"))
         self.connection_badge.pack(side="right")
 
         self.notebook = ttk.Notebook(self)
-        self.notebook.pack(fill="x", padx=18)
-        reader = ttk.Frame(self.notebook, style="Card.TFrame", padding=16)
-        dump = ttk.Frame(self.notebook, style="Card.TFrame", padding=16)
-        write = ttk.Frame(self.notebook, style="Card.TFrame", padding=16)
+        self.notebook.pack(fill="x", padx=24)
+        reader = ttk.Frame(self.notebook, style="Card.TFrame", padding=22)
+        dump = ttk.Frame(self.notebook, style="Card.TFrame", padding=22)
+        write = ttk.Frame(self.notebook, style="Card.TFrame", padding=22)
+        settings = ttk.Frame(self.notebook, style="Card.TFrame", padding=22)
         self.notebook.add(reader, text="Reader")
         self.notebook.add(dump, text="Dump")
         self.notebook.add(write, text="Write back")
+        self.notebook.add(settings, text="Settings")
 
         ttk.Label(reader, text="Read a card", style="Title.TLabel").pack(anchor="w")
         ttk.Label(reader, text="Keep the card flat against the RC522 antenna while reading.", background="#ffffff").pack(anchor="w", pady=(2, 12))
@@ -103,16 +112,28 @@ class NfcGui(tk.Tk):
         ttk.Checkbutton(write, text="Include sector trailers and keys", variable=self.write_trailers).pack(anchor="w")
         ttk.Button(write, text="Choose dump and write…", style="Primary.TButton", command=self.write_from_file).pack(anchor="w", pady=(10, 0))
 
-        status_row = ttk.Frame(self, padding=(18, 12, 18, 3))
+        ttk.Label(settings, text="Application settings", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(settings, text="Default folder used by Dump and Write Back file dialogs.", background="#ffffff").pack(anchor="w", pady=(2, 12))
+        path_row = ttk.Frame(settings, style="Card.TFrame")
+        path_row.pack(fill="x")
+        self.dump_dir_entry = ttk.Entry(path_row, textvariable=self.dump_dir, font=("Sans", 11))
+        self.dump_dir_entry.pack(side="left", fill="x", expand=True, padx=(0, 10), ipady=5)
+        ttk.Button(path_row, text="Choose folder…", command=self._choose_dump_dir).pack(side="left")
+        settings_buttons = ttk.Frame(settings, style="Card.TFrame")
+        settings_buttons.pack(anchor="w", pady=(12, 0))
+        ttk.Button(settings_buttons, text="Save settings", style="Primary.TButton", command=self._save_settings).pack(side="left", padx=(0, 8))
+        ttk.Button(settings_buttons, text="Reset to ~/Dumps", command=self._reset_dump_dir).pack(side="left")
+
+        status_row = ttk.Frame(self, padding=(24, 14, 24, 4))
         status_row.pack(fill="x")
         ttk.Label(status_row, textvariable=self.status).pack(side="left")
         self.progress = ttk.Progressbar(status_row, mode="indeterminate", length=180)
         self.progress.pack(side="right")
 
         log_frame = ttk.LabelFrame(self, text="Activity", padding=(10, 8))
-        log_frame.pack(fill="both", expand=True, padx=18, pady=(3, 16))
+        log_frame.pack(fill="both", expand=True, padx=24, pady=(4, 20))
         log_frame.pack(fill="both", expand=True)
-        self.log = tk.Text(log_frame, wrap="word", state="disabled", font=("monospace", 10),
+        self.log = tk.Text(log_frame, wrap="word", state="disabled", font=("monospace", 11),
                            bg="#101722", fg="#d8e2ef", insertbackground="white", relief="flat", padx=10, pady=8)
         scroll = ttk.Scrollbar(log_frame, orient="vertical", command=self.log.yview)
         self.log.configure(yscrollcommand=scroll.set)
@@ -124,6 +145,41 @@ class NfcGui(tk.Tk):
         self.log.insert("end", text.rstrip() + "\n")
         self.log.see("end")
         self.log.configure(state="disabled")
+
+    def _load_settings(self):
+        try:
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _save_settings(self):
+        path = Path(self.dump_dir.get()).expanduser()
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            CONFIG_FILE.write_text(json.dumps({"dump_dir": str(path)}, indent=2) + "\n", encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("ESP32 NFC", f"Could not save settings:\n{exc}")
+            return
+        self.dump_dir.set(str(path))
+        self.status.set(f"Default dump folder saved: {path}")
+        self._append(f"Settings saved: dump folder = {path}")
+
+    def _choose_dump_dir(self):
+        initial = Path(self.dump_dir.get()).expanduser()
+        chosen = filedialog.askdirectory(title="Choose default dump folder", initialdir=str(initial if initial.exists() else Path.home()))
+        if chosen:
+            self.dump_dir.set(chosen)
+
+    def _reset_dump_dir(self):
+        self.dump_dir.set(str(Path("~/Dumps").expanduser()))
+        self._save_settings()
+
+    def _current_dump_dir(self):
+        path = Path(self.dump_dir.get()).expanduser()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
     def refresh_ports(self):
         ports = [p.device for p in list_ports.comports() if "ttyUSB" in p.device or "ttyACM" in p.device]
@@ -221,11 +277,11 @@ class NfcGui(tk.Tk):
         self._run("Hold a card on the RC522…", lambda: "\n".join(self._command("INFO")))
 
     def dump_to_file(self):
-        DEFAULT_DUMP_DIR.mkdir(parents=True, exist_ok=True)
-        suggested = DEFAULT_DUMP_DIR / f"card-{datetime.now():%Y%m%d-%H%M%S}.dump"
+        dump_dir = self._current_dump_dir()
+        suggested = dump_dir / f"card-{datetime.now():%Y%m%d-%H%M%S}.dump"
         path = filedialog.asksaveasfilename(
             title="Save NFC dump",
-            initialdir=str(DEFAULT_DUMP_DIR),
+            initialdir=str(dump_dir),
             initialfile=suggested.name,
             defaultextension=".dump",
             filetypes=[("NFC dump", "*.dump"), ("All files", "*")],
@@ -248,10 +304,10 @@ class NfcGui(tk.Tk):
         self._run("Reading card and trying known keys…", work)
 
     def write_from_file(self):
-        DEFAULT_DUMP_DIR.mkdir(parents=True, exist_ok=True)
+        dump_dir = self._current_dump_dir()
         path = filedialog.askopenfilename(
             title="Choose NFC dump",
-            initialdir=str(DEFAULT_DUMP_DIR),
+            initialdir=str(dump_dir),
             filetypes=[("NFC dump", "*.dump"), ("All files", "*")],
         )
         if not path:

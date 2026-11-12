@@ -127,6 +127,10 @@ UID/info reads, dump-to-file, and safe write-back. The three KDE desktop
 launchers open the appropriate GUI directly and do not use Guake. The optional
 command-line wrapper explicitly opens **Konsole** when launched without a TTY.
 
+The GUI has a **Settings** tab where the default dump folder can be changed and
+saved permanently. Settings are stored in
+`~/.config/esp32-nfc-copier/settings.json`; the initial default is `~/Dumps`.
+
 ```bash
 python3 host/nfc_gui.py                 # complete GUI
 python3 host/nfc_gui.py --mode dump     # open the dump workflow
